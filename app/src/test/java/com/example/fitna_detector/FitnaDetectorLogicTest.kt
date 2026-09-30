@@ -1,9 +1,7 @@
 package com.example.fitna_detector
 
-import com.example.fitna_detector.model.AudioDetectionResult
 import com.example.fitna_detector.model.DetectionSettings
 import com.example.fitna_detector.model.SensitivityLevel
-import com.example.fitna_detector.model.VisualDetectionResult
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -256,7 +254,7 @@ class FitnaDetectorLogicTest {
     fun testKeywordsExemptionsAndTargeting() {
         val prohibitedKeywords = listOf(
             "official music video", "official mv", "music video", "video song",
-            "full song", "lyric video", "lyrics video", "official audio", "official video",
+            "full song", "lyric video", "lyrics video", "official audio",
             "audio song", "dance performance", "dance cover", "choreography", "item song",
             "remix song", "remix video", "lofi remix", "lofi song", "slowed + reverb",
             "vevo", "t-series",
@@ -286,6 +284,10 @@ class FitnaDetectorLogicTest {
         assertFalse("Music & audio in settings must be safe", isTextProhibited("Music & audio settings"))
         assertFalse("Broadband settings must be safe", isTextProhibited("Broadband frequency settings"))
         assertFalse("Default notification sound must be safe", isTextProhibited("Default notification sound"))
+
+        // News reports with official videos - MUST BE SAFE
+        assertFalse("BBC News official video must be safe", isTextProhibited("BBC News: Police release official video of incident"))
+        assertFalse("Reuters official report must be safe", isTextProhibited("Reuters: Official video released by department"))
 
         // Halal / Islamic exemptions - MUST BE SAFE even if mentioning music
         assertTrue("Nasheed without music must be exempted", !isTextProhibited("Heart soothing Islamic Nasheed without music"))
@@ -335,29 +337,41 @@ class FitnaDetectorLogicTest {
             val pornProb = probMap["porn"] ?: 0f
             val hentaiProb = probMap["hentai"] ?: 0f
             val sexyProb = probMap["sexy"] ?: 0f
-            val neutralProb = probMap["neutral"] ?: 0f
+            val drawingsProb = probMap["drawings"] ?: 0f
 
-            val hentaiEffective = if (skinRatio < 0.05f && pornProb < 0.08f && sexyProb < 0.12f) {
+            val isCartoon = drawingsProb > 0.40f
+            val hentaiEffective = if (isCartoon && hentaiProb > 0.25f) {
+                hentaiProb * 0.80f
+            } else {
                 0f
-            } else {
-                hentaiProb * 0.8f
             }
 
-            val combinedScore = if (neutralProb > 0.65f) {
-                pornProb + (hentaiEffective * 0.2f) + (sexyProb * 0.5f)
-            } else {
-                var score = pornProb + hentaiEffective + (sexyProb * 1.15f)
-                if ((sexyProb > 0.20f || pornProb > 0.10f) && skinRatio > 0.15f) {
-                    score += (skinRatio * 0.40f)
-                }
-                score
+            var score = pornProb + hentaiEffective + (sexyProb * 1.15f)
+            if ((sexyProb > 0.30f || pornProb > 0.15f) && skinRatio > 0.20f) {
+                score += (skinRatio * 0.35f)
             }
-            return combinedScore.coerceIn(0f, 1f)
+            return score.coerceIn(0f, 1f)
         }
 
         val threshold = SensitivityLevel.BALANCED.threshold // 0.32
 
-        // 1. White Settings UI screen (spurious hentai = 0.56, skin = 0.0, neutral = 0.28)
+        // 1. Clean News Anchor (Real Unsplash image: neutral = 0.9967, sexy = 0.0002, porn = 0.0002, skin = 0.15)
+        val cleanNewsScore = computeScore(
+            mapOf("porn" to 0.0002f, "hentai" to 0.0011f, "sexy" to 0.0002f, "neutral" to 0.9967f),
+            skinRatio = 0.15f,
+            isOverlay = false
+        )
+        assertTrue("Clean news anchor must be completely safe: score=$cleanNewsScore", cleanNewsScore < threshold)
+
+        // 2. News Anchor in business suit with face/hands visible (sexy = 0.18, porn = 0.01, skin = 0.16)
+        val newsAnchorScore = computeScore(
+            mapOf("porn" to 0.01f, "hentai" to 0.02f, "sexy" to 0.18f, "neutral" to 0.70f),
+            skinRatio = 0.16f,
+            isOverlay = false
+        )
+        assertTrue("News anchor in suit must be safe: score=$newsAnchorScore", newsAnchorScore < threshold)
+
+        // 3. White Settings UI screen (spurious hentai = 0.56, skin = 0.0, neutral = 0.28)
         val whiteScreenScore = computeScore(
             mapOf("porn" to 0.0f, "hentai" to 0.56f, "sexy" to 0.04f, "neutral" to 0.28f),
             skinRatio = 0.0f,
@@ -365,7 +379,7 @@ class FitnaDetectorLogicTest {
         )
         assertTrue("White settings screen must NOT trigger: score=$whiteScreenScore", whiteScreenScore < threshold)
 
-        // 2. Dark mode UI screen (drawings = 0.89, hentai = 0.07, sexy = 0.01, skin = 0.0)
+        // 4. Dark mode UI screen (drawings = 0.89, hentai = 0.07, sexy = 0.01, skin = 0.0)
         val darkScreenScore = computeScore(
             mapOf("porn" to 0.002f, "hentai" to 0.07f, "sexy" to 0.01f, "neutral" to 0.02f),
             skinRatio = 0.0f,
@@ -373,7 +387,7 @@ class FitnaDetectorLogicTest {
         )
         assertTrue("Dark settings screen must NOT trigger: score=$darkScreenScore", darkScreenScore < threshold)
 
-        // 3. Red shield overlay frame (isOverlay = true)
+        // 5. Red shield overlay frame (isOverlay = true)
         val overlayScore = computeScore(
             mapOf("sexy" to 0.35f, "hentai" to 0.28f),
             skinRatio = 0.0f,
@@ -381,15 +395,23 @@ class FitnaDetectorLogicTest {
         )
         assertEquals(0f, overlayScore, 0.001f)
 
-        // 4. Romantic intimate YouTube scene (sexy = 0.45, porn = 0.08, skin = 0.25)
-        val romanticScore = computeScore(
-            mapOf("porn" to 0.08f, "hentai" to 0.02f, "sexy" to 0.45f, "neutral" to 0.10f),
+        // 6. Inappropriate post inside feed (sexy = 0.40, porn = 0.05, skin = 0.25)
+        val feedPostScore = computeScore(
+            mapOf("porn" to 0.05f, "hentai" to 0.02f, "sexy" to 0.40f, "neutral" to 0.40f),
             skinRatio = 0.25f,
+            isOverlay = false
+        )
+        assertTrue("Inappropriate post inside feed must trigger: score=$feedPostScore", feedPostScore >= threshold)
+
+        // 7. Romantic intimate couple scene (sexy = 0.48, porn = 0.06, skin = 0.22)
+        val romanticScore = computeScore(
+            mapOf("porn" to 0.06f, "hentai" to 0.02f, "sexy" to 0.48f, "neutral" to 0.35f),
+            skinRatio = 0.22f,
             isOverlay = false
         )
         assertTrue("Romantic scene must trigger: score=$romanticScore", romanticScore >= threshold)
 
-        // 5. Explicit adult content (porn = 0.65, sexy = 0.20, skin = 0.35)
+        // 8. Explicit adult content (porn = 0.65, sexy = 0.20, skin = 0.35)
         val explicitScore = computeScore(
             mapOf("porn" to 0.65f, "hentai" to 0.05f, "sexy" to 0.20f, "neutral" to 0.05f),
             skinRatio = 0.35f,

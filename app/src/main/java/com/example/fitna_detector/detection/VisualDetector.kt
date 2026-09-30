@@ -27,9 +27,6 @@ class VisualDetector(private val context: Context) {
     private val ortEnv: OrtEnvironment by lazy { OrtEnvironment.getEnvironment() }
     private var ortSession: OrtSession? = null
 
-    // ImageNet normalization constants
-    private val mean = floatArrayOf(0.485f, 0.456f, 0.406f)
-    private val std = floatArrayOf(0.229f, 0.224f, 0.225f)
     private val classLabels = arrayOf("drawings", "hentai", "neutral", "porn", "sexy")
 
     // Preallocated buffers for high-speed zero-GC inference
@@ -70,11 +67,19 @@ class VisualDetector(private val context: Context) {
     /**
      * Analyzes a screen capture frame and returns whether it contains prohibited visual content.
      */
+    @Suppress("UseKtx")
     fun analyzeFrame(bitmap: Bitmap, sensitivity: SensitivityLevel): VisualDetectionResult {
         val scaledBitmap = if (bitmap.width == targetSize && bitmap.height == targetSize) {
             bitmap
         } else {
-            Bitmap.createScaledBitmap(bitmap, targetSize, targetSize, true)
+            val minDim = minOf(bitmap.width, bitmap.height)
+            val cropY = if (bitmap.height > bitmap.width) (bitmap.height - minDim) / 3 else 0
+            val cropped = Bitmap.createBitmap(bitmap, 0, cropY, minDim, minDim)
+            val scaled = Bitmap.createScaledBitmap(cropped, targetSize, targetSize, true)
+            if (cropped != bitmap) {
+                cropped.recycle()
+            }
+            scaled
         }
 
         // 1. Check if the frame is dominated by our own red shield overlay
@@ -115,26 +120,26 @@ class VisualDetector(private val context: Context) {
                 val pornProb = probMap["porn"] ?: 0f
                 val hentaiProb = probMap["hentai"] ?: 0f
                 val sexyProb = probMap["sexy"] ?: 0f
-                val neutralProb = probMap["neutral"] ?: 0f
 
-                // Flat UI / text / Settings exemption: flat backgrounds sometimes score hentai/drawings
-                val hentaiEffective = if (skinRatio < 0.05f && pornProb < 0.08f && sexyProb < 0.12f) {
+                val drawingsProb = probMap["drawings"] ?: 0f
+                // Hentai (animated porn) only applies if the content is actually an animated cartoon/drawing.
+                // Real-life human videos (vlogs, tech, cooking, news, lectures) are never polluted by hentai background noise.
+                val isCartoon = drawingsProb > 0.40f
+                val hentaiEffective = if (isCartoon && hentaiProb > 0.25f) {
+                    hentaiProb * 0.80f
+                } else {
                     0f
-                } else {
-                    hentaiProb * 0.8f
                 }
 
-                val combinedScore = if (neutralProb > 0.65f) {
-                    pornProb + (hentaiEffective * 0.2f) + (sexyProb * 0.5f)
-                } else {
-                    var score = pornProb + hentaiEffective + (sexyProb * 1.15f)
-                    if ((sexyProb > 0.20f || pornProb > 0.10f) && skinRatio > 0.15f) {
-                        score += (skinRatio * 0.40f)
-                    }
-                    score
+                // Prohibited score: sensitive to provocative clothing, romantic intimacy, swimwear, adult content
+                var score = pornProb + hentaiEffective + (sexyProb * 1.15f)
+
+                // Intimacy / swimwear boost: ONLY when BOTH sexy/porn is elevated AND high exposed skin (swimwear, romantic intimacy)
+                if ((sexyProb > 0.30f || pornProb > 0.15f) && skinRatio > 0.20f) {
+                    score += (skinRatio * 0.35f)
                 }
 
-                prohibitedScore = combinedScore.coerceIn(0f, 1f)
+                prohibitedScore = score.coerceIn(0f, 1f)
                 dominantCategory = probMap.maxByOrNull { it.value }?.key ?: "neutral"
                 results.close()
             } catch (e: Exception) {
@@ -320,6 +325,6 @@ class VisualDetector(private val context: Context) {
         try {
             ortSession?.close()
             ortSession = null
-        } catch (ignored: Exception) {}
+        } catch (_: Exception) {}
     }
 }

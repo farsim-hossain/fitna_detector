@@ -23,6 +23,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Single-Permission Accessibility Service:
@@ -35,6 +37,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 4. AudioManager high-frequency playback detection (zero audio permission required)
  * 5. Instant dismissal the moment fitna content stops or is swiped away.
  */
+@SuppressLint("AccessibilityPolicy")
 class FitnaAccessibilityService : AccessibilityService() {
 
     companion object {
@@ -66,7 +69,7 @@ class FitnaAccessibilityService : AccessibilityService() {
     private val prohibitedKeywords = listOf(
         // Music & Songs (Multi-word or distinct music video markers)
         "official music video", "official mv", "music video", "video song",
-        "full song", "lyric video", "lyrics video", "official audio", "official video",
+        "full song", "lyric video", "lyrics video", "official audio",
         "audio song", "dance performance", "dance cover", "choreography", "item song",
         "remix song", "remix video", "lofi remix", "lofi song", "slowed + reverb",
         "vevo", "t-series",
@@ -141,7 +144,7 @@ class FitnaAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
 
-        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         overlay = RedShieldOverlay(this, isAccessibilityMode = true)
         visualDetector = VisualDetector(this)
         musicDetector = MusicDetector(this) { audioResult ->
@@ -175,16 +178,22 @@ class FitnaAccessibilityService : AccessibilityService() {
             return
         }
 
-        // When user scrolls or swipes away to swap content:
+        // When user scrolls, clicks, or window content changes:
         if (event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED ||
-            event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
-            // User is actively scrolling or swapping content away!
+            event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
+            event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+
             if (overlay.isShowing()) {
-                // Temporarily clear visual flag to allow clean re-scan of the new view
+                // User is actively scrolling or swapping content away!
                 isVisualProhibited = false
                 mainHandler.post {
                     overlay.hide()
                     evaluateShieldTrigger()
+                }
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && settings.isVisualEnabled) {
+                // Instantly trigger capture on scroll/change without waiting for periodic timer!
+                if (!isScreenshotPending.get()) {
+                    captureAndAnalyzeScreenshot()
                 }
             }
         }
@@ -193,7 +202,7 @@ class FitnaAccessibilityService : AccessibilityService() {
         if (isMediaOrBrowserPackage(pkg)) {
             try {
                 inspectNodeHierarchy(rootInActiveWindow)
-            } catch (ignored: Exception) {}
+            } catch (_: Exception) {}
         }
     }
 
@@ -248,6 +257,20 @@ class FitnaAccessibilityService : AccessibilityService() {
         }
     }
 
+    private val dedicatedMusicPackages = setOf(
+        "com.spotify.music",
+        "com.google.android.apps.youtube.music",
+        "com.apple.android.music",
+        "com.soundcloud.android",
+        "deezer.android.app",
+        "com.amazon.mp3",
+        "com.pandora.android",
+        "com.tidal.mobile",
+        "com.jio.media.jiobeats",
+        "com.gaana",
+        "com.anghami"
+    )
+
     private fun startContinuousScanner() {
         continuousScannerJob?.cancel()
         continuousScannerJob = serviceScope.launch {
@@ -261,15 +284,23 @@ class FitnaAccessibilityService : AccessibilityService() {
                         isVisualProhibited = false
                         mainHandler.post { overlay.hide() }
                     }
-                    delay(300)
+                    delay(300.milliseconds)
                     continue
                 }
 
-                // 1. Direct audio check for instantaneous music reaction
-                val musicActive = audioManager.isMusicActive
-                if (musicActive != isMusicDetected) {
-                    isMusicDetected = musicActive
-                    mainHandler.post { evaluateShieldTrigger() }
+                // 1. Dedicated music streaming app detection (Spotify, YouTube Music, SoundCloud, etc.)
+                // Does NOT falsely flag general spoken videos / clean news as music
+                val isDedicatedMusicApp = dedicatedMusicPackages.any { currentPkg?.contains(it) == true }
+                if (isDedicatedMusicApp && audioManager.isMusicActive) {
+                    if (!isMusicDetected) {
+                        isMusicDetected = true
+                        mainHandler.post { evaluateShieldTrigger() }
+                    }
+                } else if (isDedicatedMusicApp && !audioManager.isMusicActive) {
+                    if (isMusicDetected) {
+                        isMusicDetected = false
+                        mainHandler.post { evaluateShieldTrigger() }
+                    }
                 }
 
                 // 2. High-speed visual screenshot analysis (Android 11+)
@@ -285,9 +316,9 @@ class FitnaAccessibilityService : AccessibilityService() {
                     if (root != null && isMediaOrBrowserPackage(root.packageName)) {
                         inspectNodeHierarchy(root)
                     }
-                } catch (ignored: Exception) {}
+                } catch (_: Exception) {}
 
-                delay(220) // Fast 220ms cycle
+                delay(100.milliseconds) // Fast 100ms cycle
             }
         }
     }
@@ -305,11 +336,10 @@ class FitnaAccessibilityService : AccessibilityService() {
                         val hardwareBuffer = screenshot.hardwareBuffer
                         val colorSpace = screenshot.colorSpace
                         try {
-                            val bitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, colorSpace)
-                            if (bitmap != null) {
-                                // Safely copy pixels to software bitmap BEFORE closing hardware buffer
-                                val softwareBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false)
-                                bitmap.recycle()
+                            val hardwareBitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, colorSpace)
+                            if (hardwareBitmap != null) {
+                                val softwareBitmap = hardwareBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                                hardwareBitmap.recycle()
 
                                 if (softwareBitmap != null) {
                                     val result = visualDetector.analyzeFrame(softwareBitmap, settings.sensitivity)
@@ -340,7 +370,7 @@ class FitnaAccessibilityService : AccessibilityService() {
                     }
                 }
             )
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             isScreenshotPending.set(false)
         }
     }
@@ -400,7 +430,7 @@ class FitnaAccessibilityService : AccessibilityService() {
         )
 
         serviceScope.launch(Dispatchers.Main) {
-            delay(5000)
+            delay(5.seconds)
             evaluateShieldTrigger()
         }
     }

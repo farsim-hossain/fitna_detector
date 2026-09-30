@@ -12,6 +12,7 @@ import android.media.MediaRecorder
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import com.example.fitna_detector.model.AudioDetectionResult
 import java.util.concurrent.atomic.AtomicBoolean
@@ -106,7 +107,7 @@ class MusicDetector(
                         }
                     }
                     Thread.sleep(120) // 120ms polling interval for lightning-fast reaction
-                } catch (ignored: InterruptedException) {
+                } catch (_: InterruptedException) {
                     break
                 } catch (e: Exception) {
                     e.printStackTrace()
@@ -124,7 +125,7 @@ class MusicDetector(
         try {
             pollingThread?.interrupt()
             pollingThread?.join(300)
-        } catch (ignored: Exception) {}
+        } catch (_: Exception) {}
         pollingThread = null
     }
 
@@ -146,30 +147,32 @@ class MusicDetector(
             playbackCallback?.let {
                 try {
                     audioManager.unregisterAudioPlaybackCallback(it)
-                } catch (ignored: Exception) {}
+                } catch (_: Exception) {}
             }
             playbackCallback = null
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.O)
     private fun handlePlaybackConfigChanged(configs: List<AudioPlaybackConfiguration>?) {
-        val hasActiveMedia = configs?.any { config ->
+        val hasMusicContentType = configs?.any { config ->
+            config.audioAttributes.contentType == AudioAttributes.CONTENT_TYPE_MUSIC
+        } ?: false
+
+        val hasAnyMedia = configs?.any { config ->
             val usage = config.audioAttributes.usage
-            val contentType = config.audioAttributes.contentType
-            usage == AudioAttributes.USAGE_MEDIA ||
-                    usage == AudioAttributes.USAGE_GAME ||
-                    contentType == AudioAttributes.CONTENT_TYPE_MUSIC
+            usage == AudioAttributes.USAGE_MEDIA || usage == AudioAttributes.USAGE_GAME
         } ?: audioManager.isMusicActive
 
-        evaluateAudioState(hasActiveMedia)
+        evaluateAudioState(hasAnyMedia, hasMusicContentType)
     }
 
     private fun checkCurrentAudioState() {
         val isMusicActive = audioManager.isMusicActive
-        evaluateAudioState(isMusicActive)
+        evaluateAudioState(isMusicActive, false)
     }
 
-    private fun evaluateAudioState(isSystemMediaActive: Boolean) {
+    private fun evaluateAudioState(isSystemMediaActive: Boolean, isExplicitMusicStream: Boolean = false) {
         val isDetected: Boolean
         val source: String
         var isSpeech = false
@@ -177,15 +180,20 @@ class MusicDetector(
         if (!isSystemMediaActive) {
             isDetected = false
             source = "Quiet / No Media"
-        } else if (!allowSpeechFilter) {
-            // Instant mode: Any active media audio is flagged immediately
+        } else if (isExplicitMusicStream) {
+            // Explicit hardware stream marked as CONTENT_TYPE_MUSIC (Spotify, Music players)
             isDetected = true
-            source = "Active Media Audio"
-        } else {
+            source = "Music Stream"
+        } else if (allowSpeechFilter) {
             // Speech filter mode: Check acoustic analysis
             isSpeech = lastResult.isSpeechLikely
             isDetected = !isSpeech
             source = if (isSpeech) "Speech / Lecture (Permitted)" else "Music Playback"
+        } else {
+            // General media playback (could be news, speech, or video)
+            // Relies on title/video metadata in video apps or acoustic analyzer
+            isDetected = false
+            source = "Spoken Media / News"
         }
 
         val result = AudioDetectionResult(
@@ -285,7 +293,7 @@ class MusicDetector(
                 try {
                     recorder?.stop()
                     recorder?.release()
-                } catch (ignored: Exception) {}
+                } catch (_: Exception) {}
                 isRecording.set(false)
             }
         }.apply {
@@ -314,7 +322,7 @@ class MusicDetector(
         try {
             audioRecordThread?.interrupt()
             audioRecordThread?.join(500)
-        } catch (ignored: Exception) {}
+        } catch (_: Exception) {}
         audioRecordThread = null
     }
 }
