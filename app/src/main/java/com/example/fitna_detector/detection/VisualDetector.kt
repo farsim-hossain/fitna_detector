@@ -32,6 +32,15 @@ class VisualDetector(private val context: Context) {
     private val std = floatArrayOf(0.229f, 0.224f, 0.225f)
     private val classLabels = arrayOf("drawings", "hentai", "neutral", "porn", "sexy")
 
+    // Preallocated buffers for high-speed zero-GC inference
+    private val targetSize = 224
+    private val floatBufferSize = 3 * targetSize * targetSize * 4
+    private val reusableByteBuffer: ByteBuffer = ByteBuffer.allocateDirect(floatBufferSize).apply {
+        order(ByteOrder.nativeOrder())
+    }
+    private val reusableFloatBuffer: FloatBuffer = reusableByteBuffer.asFloatBuffer()
+    private val reusablePixels = IntArray(targetSize * targetSize)
+
     // Hysteresis counters to prevent overlay flickering
     private var consecutiveSafeFrames = 0
     private var isCurrentlyFlagged = false
@@ -62,17 +71,27 @@ class VisualDetector(private val context: Context) {
      * Analyzes a screen capture frame and returns whether it contains prohibited visual content.
      */
     fun analyzeFrame(bitmap: Bitmap, sensitivity: SensitivityLevel): VisualDetectionResult {
-        val targetSize = 224
         val scaledBitmap = if (bitmap.width == targetSize && bitmap.height == targetSize) {
             bitmap
         } else {
             Bitmap.createScaledBitmap(bitmap, targetSize, targetSize, true)
         }
 
-        // 1. Calculate Intimacy & Skin Exposure Heuristic
+        // 1. Check if the frame is dominated by our own red shield overlay
+        val isOverlay = isShieldOverlayPresent(scaledBitmap)
+        if (isOverlay) {
+            return VisualDetectionResult(
+                isProhibited = false,
+                prohibitedScore = 0f,
+                dominantCategory = "shield_overlay",
+                probabilities = mapOf("neutral" to 1.0f)
+            )
+        }
+
+        // 2. Calculate Intimacy & Skin Exposure Heuristic (RGB + YCbCr)
         val skinRatio = computeSkinRatio(scaledBitmap)
 
-        // 2. Run ONNX Model Inference if loaded
+        // 3. Run ONNX Model Inference if loaded
         val session = ortSession
         val probabilities: Map<String, Float>
         val prohibitedScore: Float
@@ -93,19 +112,26 @@ class VisualDetector(private val context: Context) {
                 }
                 probabilities = probMap
 
-                // Prohibited classes: porn, hentai, and sexy (suggestive/romantic/revealing)
                 val pornProb = probMap["porn"] ?: 0f
                 val hentaiProb = probMap["hentai"] ?: 0f
                 val sexyProb = probMap["sexy"] ?: 0f
                 val neutralProb = probMap["neutral"] ?: 0f
 
-                // Combined score boosted by skin/intimacy ratio when suggestive cues exist
-                var combinedScore = pornProb + hentaiProb + sexyProb
+                // Flat UI / text / Settings exemption: flat backgrounds sometimes score hentai/drawings
+                val hentaiEffective = if (skinRatio < 0.05f && pornProb < 0.08f && sexyProb < 0.12f) {
+                    0f
+                } else {
+                    hentaiProb * 0.8f
+                }
 
-                // Intimacy boost: If central skin exposure is prominent (e.g. romantic couple close-up,
-                // shirtless, or revealing attire) and sexy probability is elevated (> 0.20), boost score
-                if (skinRatio > 0.28f && sexyProb > 0.20f) {
-                    combinedScore += (skinRatio * 0.35f)
+                val combinedScore = if (neutralProb > 0.65f) {
+                    pornProb + (hentaiEffective * 0.2f) + (sexyProb * 0.5f)
+                } else {
+                    var score = pornProb + hentaiEffective + (sexyProb * 1.15f)
+                    if ((sexyProb > 0.20f || pornProb > 0.10f) && skinRatio > 0.15f) {
+                        score += (skinRatio * 0.40f)
+                    }
+                    score
                 }
 
                 prohibitedScore = combinedScore.coerceIn(0f, 1f)
@@ -137,7 +163,7 @@ class VisualDetector(private val context: Context) {
             consecutiveSafeFrames = 0
         } else {
             consecutiveSafeFrames++
-            // Require 2 consecutive safe frames to clear the shield
+            // 2 consecutive safe frames clears the shield
             if (consecutiveSafeFrames >= 2) {
                 isCurrentlyFlagged = false
             }
@@ -151,43 +177,37 @@ class VisualDetector(private val context: Context) {
         )
     }
 
+    @Synchronized
     private fun createInputTensor(bitmap: Bitmap): OnnxTensor {
-        val width = 224
-        val height = 224
-        val floatBufferSize = 3 * width * height * 4
-        val byteBuffer = ByteBuffer.allocateDirect(floatBufferSize).apply {
-            order(ByteOrder.nativeOrder())
-        }
-        val floatBuffer = byteBuffer.asFloatBuffer()
+        reusableFloatBuffer.clear()
+        bitmap.getPixels(reusablePixels, 0, targetSize, 0, 0, targetSize, targetSize)
 
-        val pixels = IntArray(width * height)
-        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+        // CHW Format with raw [0.0f, 1.0f] floats
+        // Note: The ONNX model includes built-in /transforms/Sub and /transforms/Div for ImageNet normalization
+        val total = targetSize * targetSize
 
-        // CHW Format: First all Red, then all Green, then all Blue
         // Red channel
-        for (i in pixels.indices) {
-            val pixel = pixels[i]
-            val r = (pixel shr 16 and 0xFF) / 255.0f
-            floatBuffer.put((r - mean[0]) / std[0])
+        for (i in 0 until total) {
+            val r = ((reusablePixels[i] shr 16) and 0xFF) / 255.0f
+            reusableFloatBuffer.put(r)
         }
         // Green channel
-        for (i in pixels.indices) {
-            val pixel = pixels[i]
-            val g = (pixel shr 8 and 0xFF) / 255.0f
-            floatBuffer.put((g - mean[1]) / std[1])
+        for (i in 0 until total) {
+            val g = ((reusablePixels[i] shr 8) and 0xFF) / 255.0f
+            reusableFloatBuffer.put(g)
         }
         // Blue channel
-        for (i in pixels.indices) {
-            val pixel = pixels[i]
-            val b = (pixel and 0xFF) / 255.0f
-            floatBuffer.put((b - mean[2]) / std[2])
+        for (i in 0 until total) {
+            val b = (reusablePixels[i] and 0xFF) / 255.0f
+            reusableFloatBuffer.put(b)
         }
-        floatBuffer.rewind()
+        reusableFloatBuffer.rewind()
 
+        // Rank 3 tensor: (3, 224, 224)
         return OnnxTensor.createTensor(
             ortEnv,
-            floatBuffer,
-            longArrayOf(1, 3, height.toLong(), width.toLong())
+            reusableFloatBuffer,
+            longArrayOf(3, targetSize.toLong(), targetSize.toLong())
         )
     }
 
@@ -210,8 +230,40 @@ class VisualDetector(private val context: Context) {
     }
 
     /**
-     * Analyzes skin tone exposure ratio in YCbCr color space.
-     * Detects high exposed body areas, intimate romantic scenes, and revealing clothing.
+     * Detects if the current frame is predominantly our own crimson red shield overlay.
+     * Prevents the detector from getting trapped in an infinite loop analyzing its own overlay.
+     */
+    private fun isShieldOverlayPresent(bitmap: Bitmap): Boolean {
+        val width = bitmap.width
+        val height = bitmap.height
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+
+        var overlayPixelCount = 0
+        val step = 8 // Fast subsampling
+        var sampled = 0
+        var i = 0
+        while (i < pixels.size) {
+            val p = pixels[i]
+            val r = Color.red(p)
+            val g = Color.green(p)
+            val b = Color.blue(p)
+
+            // Deep crimson red overlay: R around 195, G and B around 15
+            if (r > 130 && g < 45 && b < 45) {
+                overlayPixelCount++
+            }
+            sampled++
+            i += step
+        }
+
+        // If more than 30% of pixels match synthetic crimson red, it is our overlay
+        return sampled > 0 && (overlayPixelCount.toFloat() / sampled) > 0.30f
+    }
+
+    /**
+     * Analyzes skin tone exposure ratio using combined RGB and YCbCr color spaces.
+     * Rejects synthetic red overlays, warm UI themes, and non-skin colors.
      */
     private fun computeSkinRatio(bitmap: Bitmap): Float {
         val width = bitmap.width
@@ -230,14 +282,21 @@ class VisualDetector(private val context: Context) {
             val g = Color.green(p)
             val b = Color.blue(p)
 
-            // Convert RGB to YCbCr
-            val y = 0.299f * r + 0.587f * g + 0.114f * b
-            val cb = 128 - 0.168736f * r - 0.331264f * g + 0.5f * b
-            val cr = 128 + 0.5f * r - 0.418688f * g - 0.081312f * b
+            // 1. Strict RGB skin boundary check (rejects synthetic red where g<35, b<20 or r-g > 95)
+            val isRgbSkin = r > 80 && g > 35 && b > 20 &&
+                    r > g && r > b &&
+                    (r - g) in 15..95 &&
+                    (r - b) > 15
 
-            // Standard human skin color bounding box in YCbCr space
-            if (y > 60 && cb in 80f..133f && cr in 133f..178f) {
-                skinPixelCount++
+            if (isRgbSkin) {
+                // 2. Standard human skin color bounding box in YCbCr space
+                val y = 0.299f * r + 0.587f * g + 0.114f * b
+                val cb = 128 - 0.168736f * r - 0.331264f * g + 0.5f * b
+                val cr = 128 + 0.5f * r - 0.418688f * g - 0.081312f * b
+
+                if (y in 60f..250f && cb in 80f..130f && cr in 135f..175f) {
+                    skinPixelCount++
+                }
             }
             sampled++
             i += step
@@ -247,7 +306,7 @@ class VisualDetector(private val context: Context) {
     }
 
     private fun fallbackHeuristicResult(skinRatio: Float, sensitivity: SensitivityLevel): VisualDetectionResult {
-        val threshold = if (sensitivity == SensitivityLevel.STRICT) 0.32f else 0.42f
+        val threshold = if (sensitivity == SensitivityLevel.STRICT) 0.35f else 0.45f
         val isFlagged = skinRatio >= threshold
         return VisualDetectionResult(
             isProhibited = isFlagged,

@@ -1,3 +1,4 @@
 <resources>
-    <string name="app_name">fitna_detector</string>
+    <string name="app_name">Fitna Detector</string>
+    <string name="accessibility_service_description">Fitna Detector monitors screen content and audio in real-time, displaying a 30-second red shield when prohibited visual content or music is detected.</string>
 </resources>

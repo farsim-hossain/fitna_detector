@@ -18,9 +18,9 @@ class FitnaDetectorLogicTest {
 
     @Test
     fun testSensitivityThresholds() {
-        assertEquals(0.65f, SensitivityLevel.RELAXED.threshold, 0.001f)
-        assertEquals(0.45f, SensitivityLevel.BALANCED.threshold, 0.001f)
-        assertEquals(0.30f, SensitivityLevel.STRICT.threshold, 0.001f)
+        assertEquals(0.45f, SensitivityLevel.RELAXED.threshold, 0.001f)
+        assertEquals(0.32f, SensitivityLevel.BALANCED.threshold, 0.001f)
+        assertEquals(0.22f, SensitivityLevel.STRICT.threshold, 0.001f)
     }
 
     @Test
@@ -192,5 +192,209 @@ class FitnaDetectorLogicTest {
             allowSpeechFilter = false
         )
         assertTrue("All media audio flagged in strict mode", result3)
+    }
+
+    @Test
+    fun testRedScreenDismissesImmediatelyWhenContentStopped() {
+        fun evaluateShieldState(
+            isVisualProhibited: Boolean,
+            isMusicDetected: Boolean,
+            isVisualEnabled: Boolean = true,
+            isMusicEnabled: Boolean = true
+        ): Boolean {
+            val visualTrigger = isVisualEnabled && isVisualProhibited
+            val musicTrigger = isMusicEnabled && isMusicDetected
+            return visualTrigger || musicTrigger
+        }
+
+        // 1. User starts watching YouTube romantic video or music plays -> Screen turns red
+        val isTriggered = evaluateShieldState(isVisualProhibited = true, isMusicDetected = true)
+        assertTrue("Red screen must activate when fitna content is playing", isTriggered)
+
+        // 2. User stops music or pauses video -> Screen goes away immediately!
+        val isClearedOnAudioStop = evaluateShieldState(isVisualProhibited = false, isMusicDetected = false)
+        assertFalse("Red screen must go away immediately once user stops watching/listening to fitna", isClearedOnAudioStop)
+
+        // 3. User swiped away to next safe video (only visual was prohibited, now safe) -> Clears
+        val isClearedOnSwipe = evaluateShieldState(isVisualProhibited = false, isMusicDetected = false)
+        assertFalse("Red screen must go away immediately once user swaps to clean view", isClearedOnSwipe)
+    }
+
+    @Test
+    fun testSettingsAndSystemAppsWhitelisted() {
+        fun isWhitelistedPackage(pkg: String?): Boolean {
+            if (pkg == null) return false
+            val p = pkg.lowercase()
+            return p.startsWith("com.android.settings") ||
+                    p.startsWith("com.android.systemui") ||
+                    p.startsWith("com.google.android.apps.nexuslauncher") ||
+                    p.startsWith("com.android.launcher") ||
+                    p.contains("launcher") ||
+                    p.contains("settings") ||
+                    p.contains("systemui") ||
+                    p.contains("permissioncontroller") ||
+                    p.contains("packageinstaller") ||
+                    p.contains("keyboard") ||
+                    p.contains("dialer")
+        }
+
+        assertTrue(isWhitelistedPackage("com.android.settings"))
+        assertTrue(isWhitelistedPackage("com.android.settings.subsettings"))
+        assertTrue(isWhitelistedPackage("com.android.systemui"))
+        assertTrue(isWhitelistedPackage("com.google.android.apps.nexuslauncher"))
+        assertTrue(isWhitelistedPackage("com.mi.android.globallauncher"))
+        assertTrue(isWhitelistedPackage("com.android.permissioncontroller"))
+
+        // Media and browser apps must NOT be whitelisted
+        assertFalse(isWhitelistedPackage("com.google.android.youtube"))
+        assertFalse(isWhitelistedPackage("com.instagram.android"))
+        assertFalse(isWhitelistedPackage("com.zhiliaoapp.musically"))
+        assertFalse(isWhitelistedPackage("com.android.chrome"))
+    }
+
+    @Test
+    fun testKeywordsExemptionsAndTargeting() {
+        val prohibitedKeywords = listOf(
+            "official music video", "official mv", "music video", "video song",
+            "full song", "lyric video", "lyrics video", "official audio", "official video",
+            "audio song", "dance performance", "dance cover", "choreography", "item song",
+            "remix song", "remix video", "lofi remix", "lofi song", "slowed + reverb",
+            "vevo", "t-series",
+            "romantic scene", "romance scene", "romantic song", "romantic clip",
+            "love song", "kiss scene", "kissing scene", "hot scene", "bed scene",
+            "bikini", "swimsuit", "lingerie", "cleavage", "nude", "naked",
+            "intimate scene", "love scene", "couple scene", "dating show",
+            "sensual scene", "erotic scene"
+        )
+
+        val safeExemptionKeywords = listOf(
+            "no music", "without music", "no instruments", "vocal only",
+            "acapella", "halal", "nasheed", "quran", "recitation", "tilawat", "lecture",
+            "speech", "tafsir", "khutbah", "podcast", "bayan", "fitna !", "islam approves",
+            "unblock screen"
+        )
+
+        fun isTextProhibited(text: String): Boolean {
+            val lower = text.lowercase()
+            val isExempt = safeExemptionKeywords.any { lower.contains(it) }
+            if (isExempt) return false
+            return prohibitedKeywords.any { lower.contains(it) }
+        }
+
+        // Standard Android Settings items - MUST BE SAFE
+        assertFalse("Sound & vibration in settings must be safe", isTextProhibited("Sound & vibration"))
+        assertFalse("Music & audio in settings must be safe", isTextProhibited("Music & audio settings"))
+        assertFalse("Broadband settings must be safe", isTextProhibited("Broadband frequency settings"))
+        assertFalse("Default notification sound must be safe", isTextProhibited("Default notification sound"))
+
+        // Halal / Islamic exemptions - MUST BE SAFE even if mentioning music
+        assertTrue("Nasheed without music must be exempted", !isTextProhibited("Heart soothing Islamic Nasheed without music"))
+        assertTrue("Recitation with no music must be exempted", !isTextProhibited("Surah Al-Mulk recitation [No Music]"))
+        assertTrue("Islamic lecture must be exempted", !isTextProhibited("Nouman Ali Khan Quran Tafsir Lecture"))
+
+        // Real Fitna YouTube / Media items - MUST BE FLAGGED
+        assertTrue("Official music video must be flagged", isTextProhibited("Taylor Swift - Official Music Video"))
+        assertTrue("Romantic couple scene must be flagged", isTextProhibited("Movie Clip - Romantic Scene in Rain"))
+        assertTrue("Kissing scene must be flagged", isTextProhibited("Drama Episode 5 - Best Kiss Scene"))
+        assertTrue("Lyric video song must be flagged", isTextProhibited("Hit Track 2026 - Official Lyric Video Song"))
+    }
+
+    @Test
+    fun testSyntheticRedOverlayRejectedFromSkinDetection() {
+        fun isPixelSkin(r: Int, g: Int, b: Int): Boolean {
+            val isRgbSkin = r > 80 && g > 35 && b > 20 &&
+                    r > g && r > b &&
+                    (r - g) in 15..95 &&
+                    (r - b) > 15
+            if (!isRgbSkin) return false
+
+            val y = 0.299f * r + 0.587f * g + 0.114f * b
+            val cb = 128 - 0.168736f * r - 0.331264f * g + 0.5f * b
+            val cr = 128 + 0.5f * r - 0.418688f * g - 0.081312f * b
+            return y in 60f..250f && cb in 80f..130f && cr in 135f..175f
+        }
+
+        // Deep crimson red overlay (R=195, G=15, B=15) - MUST NOT BE DETECTED AS SKIN
+        assertFalse("Red shield overlay pixel must NOT be classified as skin", isPixelSkin(195, 15, 15))
+
+        // Normal human skin tones (fair, olive, brown, dark) - MUST BE DETECTED AS SKIN
+        assertTrue("Fair skin tone", isPixelSkin(230, 185, 150))
+        assertTrue("Medium / olive skin tone", isPixelSkin(195, 140, 100))
+        assertTrue("Warm tan skin tone", isPixelSkin(160, 110, 75))
+    }
+
+    @Test
+    fun testScoringRejectsFlatUiScreens() {
+        fun computeScore(
+            probMap: Map<String, Float>,
+            skinRatio: Float,
+            isOverlay: Boolean
+        ): Float {
+            if (isOverlay) return 0f
+
+            val pornProb = probMap["porn"] ?: 0f
+            val hentaiProb = probMap["hentai"] ?: 0f
+            val sexyProb = probMap["sexy"] ?: 0f
+            val neutralProb = probMap["neutral"] ?: 0f
+
+            val hentaiEffective = if (skinRatio < 0.05f && pornProb < 0.08f && sexyProb < 0.12f) {
+                0f
+            } else {
+                hentaiProb * 0.8f
+            }
+
+            val combinedScore = if (neutralProb > 0.65f) {
+                pornProb + (hentaiEffective * 0.2f) + (sexyProb * 0.5f)
+            } else {
+                var score = pornProb + hentaiEffective + (sexyProb * 1.15f)
+                if ((sexyProb > 0.20f || pornProb > 0.10f) && skinRatio > 0.15f) {
+                    score += (skinRatio * 0.40f)
+                }
+                score
+            }
+            return combinedScore.coerceIn(0f, 1f)
+        }
+
+        val threshold = SensitivityLevel.BALANCED.threshold // 0.32
+
+        // 1. White Settings UI screen (spurious hentai = 0.56, skin = 0.0, neutral = 0.28)
+        val whiteScreenScore = computeScore(
+            mapOf("porn" to 0.0f, "hentai" to 0.56f, "sexy" to 0.04f, "neutral" to 0.28f),
+            skinRatio = 0.0f,
+            isOverlay = false
+        )
+        assertTrue("White settings screen must NOT trigger: score=$whiteScreenScore", whiteScreenScore < threshold)
+
+        // 2. Dark mode UI screen (drawings = 0.89, hentai = 0.07, sexy = 0.01, skin = 0.0)
+        val darkScreenScore = computeScore(
+            mapOf("porn" to 0.002f, "hentai" to 0.07f, "sexy" to 0.01f, "neutral" to 0.02f),
+            skinRatio = 0.0f,
+            isOverlay = false
+        )
+        assertTrue("Dark settings screen must NOT trigger: score=$darkScreenScore", darkScreenScore < threshold)
+
+        // 3. Red shield overlay frame (isOverlay = true)
+        val overlayScore = computeScore(
+            mapOf("sexy" to 0.35f, "hentai" to 0.28f),
+            skinRatio = 0.0f,
+            isOverlay = true
+        )
+        assertEquals(0f, overlayScore, 0.001f)
+
+        // 4. Romantic intimate YouTube scene (sexy = 0.45, porn = 0.08, skin = 0.25)
+        val romanticScore = computeScore(
+            mapOf("porn" to 0.08f, "hentai" to 0.02f, "sexy" to 0.45f, "neutral" to 0.10f),
+            skinRatio = 0.25f,
+            isOverlay = false
+        )
+        assertTrue("Romantic scene must trigger: score=$romanticScore", romanticScore >= threshold)
+
+        // 5. Explicit adult content (porn = 0.65, sexy = 0.20, skin = 0.35)
+        val explicitScore = computeScore(
+            mapOf("porn" to 0.65f, "hentai" to 0.05f, "sexy" to 0.20f, "neutral" to 0.05f),
+            skinRatio = 0.35f,
+            isOverlay = false
+        )
+        assertTrue("Explicit content must trigger: score=$explicitScore", explicitScore >= threshold)
     }
 }

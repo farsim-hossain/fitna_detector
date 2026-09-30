@@ -38,15 +38,15 @@ data class ShieldStatus(
  * User configuration settings.
  */
 enum class SensitivityLevel(val displayName: String, val threshold: Float) {
-    RELAXED("Relaxed", 0.65f),
-    BALANCED("Balanced", 0.45f),
-    STRICT("Strict", 0.30f)
+    RELAXED("Relaxed", 0.45f),
+    BALANCED("Balanced", 0.32f),
+    STRICT("Strict", 0.22f)
 }
 
 data class DetectionSettings(
     val isVisualEnabled: Boolean = true,
     val isMusicEnabled: Boolean = true,
     val sensitivity: SensitivityLevel = SensitivityLevel.BALANCED,
-    val allowSpeechLectures: Boolean = true,
+    val allowSpeechLectures: Boolean = false, // Immediate detection for music & videos by default
     val overlayOpacity: Float = 0.93f
 )

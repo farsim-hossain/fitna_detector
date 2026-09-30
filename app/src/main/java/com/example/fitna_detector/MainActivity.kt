@@ -1,7 +1,9 @@
 package com.example.fitna_detector
 
 import android.Manifest
+import android.accessibilityservice.AccessibilityService
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -10,12 +12,17 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.TextUtils
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -28,17 +35,27 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import com.example.fitna_detector.model.DetectionSettings
 import com.example.fitna_detector.model.SensitivityLevel
 import com.example.fitna_detector.model.ShieldStatus
+import com.example.fitna_detector.service.FitnaAccessibilityService
 import com.example.fitna_detector.service.ScreenShieldService
 import com.example.fitna_detector.ui.theme.Fitna_detectorTheme
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -47,120 +64,165 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             Fitna_detectorTheme {
-                FitnaDetectorDashboard()
+                var showSplashScreen by remember { mutableStateOf(true) }
+
+                LaunchedEffect(Unit) {
+                    delay(2600)
+                    showSplashScreen = false
+                }
+
+                if (showSplashScreen) {
+                    SplashScreen(onEnter = { showSplashScreen = false })
+                } else {
+                    FitnaDetectorDashboard(onShowSplash = { showSplashScreen = true })
+                }
             }
         }
     }
 }
 
+@Composable
+fun SplashScreen(onEnter: () -> Unit) {
+    val alphaAnim = remember { Animatable(0f) }
+    val scaleAnim = remember { Animatable(0.82f) }
+
+    LaunchedEffect(Unit) {
+        launch {
+            alphaAnim.animateTo(1f, animationSpec = tween(1000, easing = FastOutSlowInEasing))
+        }
+        launch {
+            scaleAnim.animateTo(1f, animationSpec = tween(1000, easing = FastOutSlowInEasing))
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF070F14)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier
+                .padding(32.dp)
+                .graphicsLayer(
+                    alpha = alphaAnim.value,
+                    scaleX = scaleAnim.value,
+                    scaleY = scaleAnim.value
+                )
+        ) {
+            Image(
+                painter = painterResource(id = R.drawable.app_logo),
+                contentDescription = "Fitna Detector Logo",
+                modifier = Modifier
+                    .size(190.dp)
+                    .clip(RoundedCornerShape(32.dp))
+            )
+
+            Spacer(modifier = Modifier.height(28.dp))
+
+            Text(
+                text = "Fitna Detector",
+                fontSize = 32.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFFE0C475), // Gold emblem tone
+                letterSpacing = 1.sp
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "Guarding Your Gaze & Ears",
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                color = Color(0xFFA5D6A7), // Soft emerald tone
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(18.dp))
+
+            Text(
+                text = "\"Tell the believing men to lower their gaze and guard their modesty; that is purer for them.\" — Surah An-Nur 24:30",
+                fontSize = 13.sp,
+                fontStyle = FontStyle.Italic,
+                color = Color(0xFFB0BEC5),
+                textAlign = TextAlign.Center,
+                lineHeight = 20.sp,
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+
+            Spacer(modifier = Modifier.height(36.dp))
+
+            Button(
+                onClick = onEnter,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B5E20)),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text(text = "Enter Shield Dashboard", color = Color.White, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+fun checkAccessibilityPermission(context: Context): Boolean {
+    val expectedId = ComponentName(context, FitnaAccessibilityService::class.java).flattenToString()
+    val enabledServices = Settings.Secure.getString(
+        context.contentResolver,
+        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+    ) ?: return false
+    val colonSplitter = TextUtils.SimpleStringSplitter(':')
+    colonSplitter.setString(enabledServices)
+    while (colonSplitter.hasNext()) {
+        val component = colonSplitter.next()
+        if (component.equals(expectedId, ignoreCase = true) || component.contains("FitnaAccessibilityService")) {
+            return true
+        }
+    }
+    return false
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FitnaDetectorDashboard() {
+fun FitnaDetectorDashboard(onShowSplash: () -> Unit = {}) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
 
-    val shieldStatus by ScreenShieldService.shieldStatus.collectAsState()
+    var isAccessibilityEnabled by remember {
+        mutableStateOf(checkAccessibilityPermission(context))
+    }
+
+    // Refresh accessibility state when returning from system settings
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        isAccessibilityEnabled = checkAccessibilityPermission(context)
+    }
+
+    val foregroundStatus by ScreenShieldService.shieldStatus.collectAsState()
+    val accessibilityStatus by FitnaAccessibilityService.serviceStatus.collectAsState()
+
+    // Combined active shield status
+    val activeStatus = if (isAccessibilityEnabled) accessibilityStatus else foregroundStatus
+    val isRunning = isAccessibilityEnabled || foregroundStatus.isRunning
 
     var settings by remember { mutableStateOf(DetectionSettings()) }
 
     var hasOverlayPermission by remember {
         mutableStateOf(Settings.canDrawOverlays(context))
     }
-    var hasMicPermission by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.RECORD_AUDIO
-            ) == PackageManager.PERMISSION_GRANTED
-        )
-    }
-    var hasNotificationPermission by remember {
-        mutableStateOf(
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.POST_NOTIFICATIONS
-                ) == PackageManager.PERMISSION_GRANTED
-            } else true
-        )
-    }
 
-    // MediaProjection screen capture intent launcher
-    val mediaProjectionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-            val serviceIntent = Intent(context, ScreenShieldService::class.java).apply {
-                action = ScreenShieldService.ACTION_START
-                putExtra(ScreenShieldService.EXTRA_RESULT_CODE, result.resultCode)
-                putExtra(ScreenShieldService.EXTRA_RESULT_DATA, result.data)
-                putExtra(ScreenShieldService.EXTRA_SENSITIVITY, settings.sensitivity.name)
-                putExtra(ScreenShieldService.EXTRA_ALLOW_SPEECH, settings.allowSpeechLectures)
-                putExtra(ScreenShieldService.EXTRA_OPACITY, settings.overlayOpacity)
-                putExtra(ScreenShieldService.EXTRA_VISUAL_ENABLED, settings.isVisualEnabled)
-                putExtra(ScreenShieldService.EXTRA_MUSIC_ENABLED, settings.isMusicEnabled)
-            }
-            ContextCompat.startForegroundService(context, serviceIntent)
-            Toast.makeText(context, "Fitna Shield Activated!", Toast.LENGTH_SHORT).show()
-        } else {
-            Toast.makeText(context, "Screen capture permission required for visual protection", Toast.LENGTH_LONG).show()
+    fun openAccessibilitySettings() {
+        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
+        context.startActivity(intent)
+        Toast.makeText(context, "Find 'Fitna Detector' and toggle it ON", Toast.LENGTH_LONG).show()
     }
 
-    // Permission launcher for overlay
-    val overlayPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) {
-        hasOverlayPermission = Settings.canDrawOverlays(context)
-    }
-
-    // Runtime permissions launcher (Mic + Notifications)
-    val runtimePermissionsLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        hasMicPermission = permissions[Manifest.permission.RECORD_AUDIO] ?: hasMicPermission
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            hasNotificationPermission = permissions[Manifest.permission.POST_NOTIFICATIONS] ?: hasNotificationPermission
-        }
-    }
-
-    fun startServiceFlow() {
-        if (!hasOverlayPermission) {
-            Toast.makeText(context, "Please allow 'Display over other apps'", Toast.LENGTH_LONG).show()
-            val intent = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:${context.packageName}")
-            )
-            overlayPermissionLauncher.launch(intent)
-            return
-        }
-
-        val neededPermissions = mutableListOf<String>()
-        if (!hasMicPermission) neededPermissions.add(Manifest.permission.RECORD_AUDIO)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission) {
-            neededPermissions.add(Manifest.permission.POST_NOTIFICATIONS)
-        }
-
-        if (neededPermissions.isNotEmpty()) {
-            runtimePermissionsLauncher.launch(neededPermissions.toTypedArray())
-            return
-        }
-
-        val mpManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        mediaProjectionLauncher.launch(mpManager.createScreenCaptureIntent())
-    }
-
-    fun stopService() {
-        val serviceIntent = Intent(context, ScreenShieldService::class.java).apply {
-            action = ScreenShieldService.ACTION_STOP
-        }
-        context.startService(serviceIntent)
-        Toast.makeText(context, "Fitna Shield Stopped", Toast.LENGTH_SHORT).show()
-    }
-
-    fun updateServiceSettings(newSettings: DetectionSettings) {
+    fun updateSettings(newSettings: DetectionSettings) {
         settings = newSettings
-        if (shieldStatus.isRunning) {
+        FitnaAccessibilityService.instance?.updateSettings(newSettings)
+
+        if (foregroundStatus.isRunning) {
             val serviceIntent = Intent(context, ScreenShieldService::class.java).apply {
                 action = ScreenShieldService.ACTION_UPDATE_SETTINGS
                 putExtra(ScreenShieldService.EXTRA_SENSITIVITY, newSettings.sensitivity.name)
@@ -177,17 +239,34 @@ fun FitnaDetectorDashboard() {
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text(
-                            text = "🛡️ Fitna Detector",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 20.sp
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.app_logo),
+                            contentDescription = null,
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(RoundedCornerShape(8.dp))
                         )
-                        Text(
-                            text = "Islamic Screen & Music Shield",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Column {
+                            Text(
+                                text = "Fitna Detector",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp
+                            )
+                            Text(
+                                text = "Guarding Gaze & Ears",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                },
+                actions = {
+                    IconButton(onClick = onShowSplash) {
+                        Icon(imageVector = Icons.Default.Info, contentDescription = "About / Opening Screen")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -205,63 +284,36 @@ fun FitnaDetectorDashboard() {
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
 
-            // Master Protection Toggle Card
-            MasterSwitchCard(
-                isRunning = shieldStatus.isRunning,
-                onToggle = { enable ->
-                    if (enable) {
-                        startServiceFlow()
-                    } else {
-                        stopService()
-                    }
-                }
+            // Single Permission Primary Setup Card
+            SinglePermissionCard(
+                isAccessibilityEnabled = isAccessibilityEnabled,
+                onEnableClick = { openAccessibilitySettings() }
             )
 
             // Live Shield Monitor HUD Card
-            LiveMonitorCard(shieldStatus = shieldStatus)
+            LiveMonitorCard(shieldStatus = activeStatus)
 
-            // Permissions Checklist Card
-            PermissionsCard(
-                hasOverlay = hasOverlayPermission,
-                hasMic = hasMicPermission,
-                hasNotification = hasNotificationPermission,
-                onRequestOverlay = {
-                    val intent = Intent(
-                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:${context.packageName}")
-                    )
-                    overlayPermissionLauncher.launch(intent)
-                },
-                onRequestRuntime = {
-                    val needed = mutableListOf<String>()
-                    if (!hasMicPermission) needed.add(Manifest.permission.RECORD_AUDIO)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission) {
-                        needed.add(Manifest.permission.POST_NOTIFICATIONS)
-                    }
-                    if (needed.isNotEmpty()) {
-                        runtimePermissionsLauncher.launch(needed.toTypedArray())
-                    }
-                }
-            )
-
-            // Detection Settings Card
+            // Detection Preferences Card
             SettingsCard(
                 settings = settings,
-                onSettingsChanged = { updateServiceSettings(it) }
+                onSettingsChanged = { updateSettings(it) }
             )
 
             // Test Simulation Card
             TestSimulationCard(
-                hasOverlay = hasOverlayPermission,
                 onTestClick = {
-                    if (!hasOverlayPermission) {
-                        Toast.makeText(context, "Grant 'Display over other apps' to test", Toast.LENGTH_SHORT).show()
-                    } else {
+                    if (FitnaAccessibilityService.instance != null) {
+                        FitnaAccessibilityService.instance?.testShieldTemporarily()
+                        Toast.makeText(context, "Testing 30-Second Red Shield", Toast.LENGTH_SHORT).show()
+                    } else if (hasOverlayPermission) {
                         val serviceIntent = Intent(context, ScreenShieldService::class.java).apply {
                             action = ScreenShieldService.ACTION_TEST_SHIELD
                             putExtra(ScreenShieldService.EXTRA_OPACITY, settings.overlayOpacity)
                         }
                         ContextCompat.startForegroundService(context, serviceIntent)
+                    } else {
+                        Toast.makeText(context, "Enable Fitna Detector in Accessibility to test", Toast.LENGTH_LONG).show()
+                        openAccessibilitySettings()
                     }
                 }
             )
@@ -272,64 +324,73 @@ fun FitnaDetectorDashboard() {
 }
 
 @Composable
-fun MasterSwitchCard(
-    isRunning: Boolean,
-    onToggle: (Boolean) -> Unit
+fun SinglePermissionCard(
+    isAccessibilityEnabled: Boolean,
+    onEnableClick: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = if (isRunning) Color(0xFF1B5E20) else MaterialTheme.colorScheme.surfaceVariant
+            containerColor = if (isAccessibilityEnabled) Color(0xFF1B5E20) else MaterialTheme.colorScheme.primaryContainer
         ),
         shape = RoundedCornerShape(16.dp)
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(20.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Box(
                     modifier = Modifier
                         .size(48.dp)
                         .background(
-                            color = if (isRunning) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outlineVariant,
+                            color = if (isAccessibilityEnabled) Color(0xFF2E7D32) else MaterialTheme.colorScheme.primary,
                             shape = CircleShape
                         ),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = if (isRunning) Icons.Default.Shield else Icons.Default.Security,
+                        imageVector = if (isAccessibilityEnabled) Icons.Default.CheckCircle else Icons.Default.Security,
                         contentDescription = null,
-                        tint = if (isRunning) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint = Color.White,
                         modifier = Modifier.size(28.dp)
                     )
                 }
 
                 Column {
                     Text(
-                        text = if (isRunning) "Protection Active" else "Protection Paused",
-                        fontSize = 18.sp,
+                        text = if (isAccessibilityEnabled) "Shield Active (Single Permission Granted)" else "Single-Permission Setup",
+                        fontSize = 17.sp,
                         fontWeight = FontWeight.Bold,
-                        color = if (isRunning) Color.White else MaterialTheme.colorScheme.onSurface
+                        color = if (isAccessibilityEnabled) Color.White else MaterialTheme.colorScheme.onPrimaryContainer
                     )
                     Text(
-                        text = if (isRunning) "Scanning display & audio in background" else "Tap switch to start shield",
+                        text = if (isAccessibilityEnabled)
+                            "Monitoring screen & audio with 30s lockout"
+                        else
+                            "Grant once in Accessibility Settings. No mic, overlay, or casting popups needed!",
                         fontSize = 13.sp,
-                        color = if (isRunning) Color(0xFFC8E6C9) else MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (isAccessibilityEnabled) Color(0xFFC8E6C9) else MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                     )
                 }
             }
 
-            Switch(
-                checked = isRunning,
-                onCheckedChange = onToggle
-            )
+            if (!isAccessibilityEnabled) {
+                Button(
+                    onClick = onEnableClick,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = "Enable Fitna Detector (1-Tap Grant)", fontWeight = FontWeight.Bold)
+                }
+            }
         }
     }
 }
@@ -357,13 +418,11 @@ fun LiveMonitorCard(shieldStatus: ShieldStatus) {
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 16.sp
                 )
-                if (shieldStatus.isRunning) {
-                    Text(
-                        text = "Scan: ${"%.1f".format(shieldStatus.fps)} FPS",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.outline
-                    )
-                }
+                Text(
+                    text = "Auto-Unblocks on Stop",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.outline
+                )
             }
 
             HorizontalDivider()
@@ -376,7 +435,7 @@ fun LiveMonitorCard(shieldStatus: ShieldStatus) {
                 StatusBadge(
                     modifier = Modifier.weight(1f),
                     title = "Visual State",
-                    status = if (shieldStatus.isVisualProhibited) "Prohibited!" else "Clean / Safe",
+                    status = if (shieldStatus.isVisualProhibited) "Fitna Detected!" else "Clean / Safe",
                     isWarning = shieldStatus.isVisualProhibited,
                     icon = Icons.Default.Visibility
                 )
@@ -397,21 +456,30 @@ fun LiveMonitorCard(shieldStatus: ShieldStatus) {
                     colors = CardDefaults.cardColors(containerColor = Color(0xFFB71C1C)),
                     shape = RoundedCornerShape(8.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Warning,
-                            contentDescription = null,
-                            tint = Color.White
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = Color.White
+                            )
+                            Text(
+                                text = "Fitna ! change the content.",
+                                color = Color.White,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                         Text(
-                            text = shieldStatus.activeTriggerReason.ifEmpty { "Red Shield Active" },
-                            color = Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium
+                            text = "Watch something that Islam approves (Screen unblocks immediately once stopped)",
+                            color = Color(0xFFFFCDD2),
+                            fontSize = 12.sp
                         )
                     }
                 }
@@ -461,90 +529,6 @@ fun StatusBadge(
                 fontWeight = FontWeight.Bold,
                 color = if (isWarning) Color(0xFFC62828) else Color(0xFF2E7D32)
             )
-        }
-    }
-}
-
-@Composable
-fun PermissionsCard(
-    hasOverlay: Boolean,
-    hasMic: Boolean,
-    hasNotification: Boolean,
-    onRequestOverlay: () -> Unit,
-    onRequestRuntime: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Text(
-                text = "Required Permissions",
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 16.sp
-            )
-
-            PermissionRow(
-                title = "Display over other apps (Red Shield)",
-                isGranted = hasOverlay,
-                onGrantClick = onRequestOverlay
-            )
-
-            PermissionRow(
-                title = "Microphone (Acoustic Music vs Speech)",
-                isGranted = hasMic,
-                onGrantClick = onRequestRuntime
-            )
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                PermissionRow(
-                    title = "Foreground Notification",
-                    isGranted = hasNotification,
-                    onGrantClick = onRequestRuntime
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun PermissionRow(
-    title: String,
-    isGranted: Boolean,
-    onGrantClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Row(
-            modifier = Modifier.weight(1f),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Icon(
-                imageVector = if (isGranted) Icons.Default.CheckCircle else Icons.Default.Warning,
-                contentDescription = null,
-                tint = if (isGranted) Color(0xFF2E7D32) else Color(0xFFF57C00),
-                modifier = Modifier.size(18.dp)
-            )
-            Text(
-                text = title,
-                fontSize = 13.sp
-            )
-        }
-
-        if (!isGranted) {
-            TextButton(onClick = onGrantClick) {
-                Text(text = "Grant", fontSize = 12.sp)
-            }
         }
     }
 }
@@ -677,7 +661,6 @@ fun SettingsCard(
 
 @Composable
 fun TestSimulationCard(
-    hasOverlay: Boolean,
     onTestClick: () -> Unit
 ) {
     Card(
@@ -697,7 +680,7 @@ fun TestSimulationCard(
                 fontSize = 16.sp
             )
             Text(
-                text = "Previews the red screen for 3 seconds so you can verify touch and swipe passthrough behavior.",
+                text = "Previews the red screen with 'Fitna ! change the content. Watch something that Islam approves'. The shield stays red while prohibited content/music is active and clears once stopped.",
                 fontSize = 13.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -708,7 +691,7 @@ fun TestSimulationCard(
             ) {
                 Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(text = "Test Red Shield (3 Seconds)")
+                Text(text = "Test Red Shield (5s Preview)")
             }
         }
     }

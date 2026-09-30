@@ -18,11 +18,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 
 /**
- * Real-time detector for music and music video audio playback.
+ * High-speed detector for music and music video audio playback.
  *
  * Combines:
- * 1. Android OS System Playback Callback (instantaneous, zero battery drain)
- * 2. Real-time Acoustic Feature Analyzer (distinguishes music/beats from spoken lectures & recitation)
+ * 1. High-frequency (120ms) polling of AudioManager.isMusicActive for instant reaction.
+ * 2. System AudioPlaybackCallback (API 26+) for hardware stream usage attributes.
+ * 3. Optional acoustic feature analysis (distinguishes music beats from pure speech when enabled).
  */
 class MusicDetector(
     private val context: Context,
@@ -34,7 +35,11 @@ class MusicDetector(
 
     private var playbackCallback: AudioManager.AudioPlaybackCallback? = null
     private var isRunning = false
-    private var allowSpeechFilter = true
+    private var allowSpeechFilter = false
+
+    // Fast polling thread for sub-150ms audio state changes
+    private var pollingThread: Thread? = null
+    private val isPolling = AtomicBoolean(false)
 
     // AudioRecord acoustic analyzer thread
     private var audioRecordThread: Thread? = null
@@ -42,6 +47,7 @@ class MusicDetector(
 
     // Current detection state
     private var lastResult = AudioDetectionResult()
+    private var lastMediaActiveState = false
 
     fun start(allowSpeechLectures: Boolean) {
         if (isRunning) return
@@ -49,6 +55,8 @@ class MusicDetector(
         this.allowSpeechFilter = allowSpeechLectures
 
         registerSystemPlaybackCallback()
+        startFastPolling()
+
         if (allowSpeechLectures) {
             startAcousticAnalyzer()
         }
@@ -75,11 +83,49 @@ class MusicDetector(
         if (!isRunning) return
         isRunning = false
 
+        stopFastPolling()
         unregisterSystemPlaybackCallback()
         stopAcousticAnalyzer()
 
         lastResult = AudioDetectionResult()
+        lastMediaActiveState = false
         onMusicDetectedChanged(lastResult)
+    }
+
+    private fun startFastPolling() {
+        if (isPolling.get()) return
+        isPolling.set(true)
+        pollingThread = Thread {
+            while (isPolling.get()) {
+                try {
+                    val isActiveNow = audioManager.isMusicActive
+                    if (isActiveNow != lastMediaActiveState) {
+                        lastMediaActiveState = isActiveNow
+                        mainHandler.post {
+                            evaluateAudioState(isActiveNow)
+                        }
+                    }
+                    Thread.sleep(120) // 120ms polling interval for lightning-fast reaction
+                } catch (ignored: InterruptedException) {
+                    break
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }.apply {
+            name = "MusicDetector-FastPollingThread"
+            priority = Thread.NORM_PRIORITY + 1
+            start()
+        }
+    }
+
+    private fun stopFastPolling() {
+        isPolling.set(false)
+        try {
+            pollingThread?.interrupt()
+            pollingThread?.join(300)
+        } catch (ignored: Exception) {}
+        pollingThread = null
     }
 
     private fun registerSystemPlaybackCallback() {
@@ -132,11 +178,11 @@ class MusicDetector(
             isDetected = false
             source = "Quiet / No Media"
         } else if (!allowSpeechFilter) {
-            // Strict mode: Any active media audio is flagged immediately
+            // Instant mode: Any active media audio is flagged immediately
             isDetected = true
-            source = "Active Media Playback"
+            source = "Active Media Audio"
         } else {
-            // Speech filter mode: Check if acoustic analysis marked it as speech
+            // Speech filter mode: Check acoustic analysis
             isSpeech = lastResult.isSpeechLikely
             isDetected = !isSpeech
             source = if (isSpeech) "Speech / Lecture (Permitted)" else "Music Playback"
@@ -155,10 +201,6 @@ class MusicDetector(
         }
     }
 
-    /**
-     * Optional acoustic analyzer to detect pauses and spectral rhythm
-     * to distinguish speech/lectures from musical instruments/beats.
-     */
     @SuppressLint("MissingPermission")
     private fun startAcousticAnalyzer() {
         if (isRecording.get()) return
@@ -203,7 +245,6 @@ class MusicDetector(
                 while (isRecording.get()) {
                     val read = recorder.read(buffer, 0, buffer.size)
                     if (read > 0) {
-                        // Calculate energy and zero-crossing rate
                         var energySum = 0.0
                         var zeroCrossings = 0
 
@@ -218,17 +259,13 @@ class MusicDetector(
                         val avgEnergy = energySum / read
                         val zcr = zeroCrossings.toFloat() / read
 
-                        // Speech characteristics: Frequent intermittent pauses in energy
                         if (avgEnergy < 120.0) {
                             speechPauseCount++
                         }
                         windowCount++
 
-                        // Every 1 second (~4 windows of 4096 samples at 16kHz)
                         if (windowCount >= 4) {
                             val pauseRatio = speechPauseCount.toFloat() / windowCount
-                            // Human speech typically contains > 25% micro-pauses between syllables/words
-                            // Music maintains continuous steady rhythmic energy
                             val isSpeech = pauseRatio > 0.25f || (zcr > 0.15f && pauseRatio > 0.15f)
 
                             val currentMediaActive = audioManager.isMusicActive
@@ -262,7 +299,7 @@ class MusicDetector(
         val result = AudioDetectionResult(
             isMusicDetected = isMusic,
             confidence = if (isMusic) 0.90f else 0.2f,
-            sourceDescription = if (isSpeech) "Speech / Lecture (Permitted)" else "Music / Musical Beat Detected",
+            sourceDescription = if (isSpeech) "Speech / Lecture (Permitted)" else "Music Beat Detected",
             isSpeechLikely = isSpeech
         )
 

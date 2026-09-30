@@ -19,14 +19,22 @@ import android.widget.TextView
  *
  * Uses WindowManager with FLAG_NOT_TOUCHABLE so that touch and swipe events
  * pass directly to the underlying application (e.g. YouTube, TikTok, Browser),
- * allowing the user to scroll or swipe away from the prohibited content.
+ * allowing the user to change the content or scroll away from the prohibited content.
+ *
+ * Stays visible for at least 30 seconds once triggered.
  */
-class RedShieldOverlay(private val context: Context) {
+class RedShieldOverlay(
+    private val context: Context,
+    private val isAccessibilityMode: Boolean = false
+) {
 
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var overlayView: FrameLayout? = null
+    private var titleTextView: TextView? = null
+    private var messageTextView: TextView? = null
+    private var instructionTextView: TextView? = null
     private var reasonTextView: TextView? = null
     private var isVisible = false
 
@@ -37,7 +45,8 @@ class RedShieldOverlay(private val context: Context) {
             val alpha = (opacity.coerceIn(0.5f, 0.98f) * 255).toInt()
             // Deep crimson red (R: 195, G: 15, B: 15)
             overlayView?.setBackgroundColor(Color.argb(alpha, 195, 15, 15))
-            reasonTextView?.text = reason
+
+            reasonTextView?.text = if (reason.isNotEmpty()) "Detected: $reason" else ""
 
             if (!isVisible) {
                 overlayView?.visibility = View.VISIBLE
@@ -65,6 +74,9 @@ class RedShieldOverlay(private val context: Context) {
                 } catch (ignored: Exception) {}
             }
             overlayView = null
+            titleTextView = null
+            messageTextView = null
+            instructionTextView = null
             reasonTextView = null
             isVisible = false
         }
@@ -73,15 +85,19 @@ class RedShieldOverlay(private val context: Context) {
     private fun ensureOverlayCreated() {
         if (overlayView != null) return
 
+        val windowType = if (isAccessibilityMode) {
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+
         val layoutParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            } else {
-                @Suppress("DEPRECATION")
-                WindowManager.LayoutParams.TYPE_PHONE
-            },
+            windowType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
@@ -92,7 +108,6 @@ class RedShieldOverlay(private val context: Context) {
         }
 
         val root = FrameLayout(context).apply {
-            // Initial state is hidden until show() is invoked
             visibility = View.GONE
         }
 
@@ -100,10 +115,10 @@ class RedShieldOverlay(private val context: Context) {
         val contentCard = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(48, 48, 48, 48)
+            setPadding(56, 56, 56, 56)
 
-            // Semi-translucent dark background for readability
-            val cardBg = Color.argb(160, 20, 20, 20)
+            // Semi-translucent dark background card for readability
+            val cardBg = Color.argb(200, 15, 15, 15)
             setBackgroundColor(cardBg)
         }
 
@@ -112,47 +127,63 @@ class RedShieldOverlay(private val context: Context) {
             FrameLayout.LayoutParams.WRAP_CONTENT
         ).apply {
             gravity = Gravity.CENTER
-            marginStart = 64
-            marginEnd = 64
+            marginStart = 48
+            marginEnd = 48
         }
 
-        // Shield Icon / Title
+        // Exact requested Title: "Fitna !"
         val titleView = TextView(context).apply {
-            text = "🛡️ Fitna Shield Active"
-            textSize = 22f
+            text = "Fitna !"
+            textSize = 30f
             setTextColor(Color.WHITE)
             setTypeface(typeface, Typeface.BOLD)
             gravity = Gravity.CENTER
-            setShadowLayer(8f, 0f, 2f, Color.BLACK)
+            setShadowLayer(10f, 0f, 2f, Color.RED)
         }
 
-        // Trigger reason text
-        val reasonView = TextView(context).apply {
-            text = "Prohibited visual content or music detected"
-            textSize = 15f
-            setTextColor(Color.argb(240, 255, 235, 235))
+        // Exact requested Message: "change the content. Watch something that Islam approves"
+        val messageView = TextView(context).apply {
+            text = "change the content. Watch something that Islam approves"
+            textSize = 17f
+            setTextColor(Color.argb(255, 255, 235, 235))
+            setTypeface(typeface, Typeface.BOLD)
             gravity = Gravity.CENTER
-            setPadding(0, 16, 0, 16)
+            setPadding(0, 20, 0, 16)
+            setLineSpacing(4f, 1.2f)
         }
 
-        // Instruction to swipe away
+        // Guidance notice: immediately unblocks when content is stopped or swiped away
         val instructionView = TextView(context).apply {
-            text = "Swipe away, scroll, or exit to unblock screen"
-            textSize = 13f
-            setTextColor(Color.argb(200, 220, 220, 220))
+            text = "Stop playback or swipe away to unblock screen"
+            textSize = 14f
+            setTextColor(Color.argb(240, 255, 204, 128)) // Warm amber tone
+            setTypeface(typeface, Typeface.NORMAL)
+            gravity = Gravity.CENTER
+            setPadding(0, 4, 0, 12)
+        }
+
+        // Detected trigger reason
+        val reasonView = TextView(context).apply {
+            text = ""
+            textSize = 12f
+            setTextColor(Color.argb(180, 220, 220, 220))
             setTypeface(typeface, Typeface.ITALIC)
             gravity = Gravity.CENTER
         }
 
         contentCard.addView(titleView)
-        contentCard.addView(reasonView)
+        contentCard.addView(messageView)
         contentCard.addView(instructionView)
+        contentCard.addView(reasonView)
 
         root.addView(contentCard, cardLayoutParams)
 
         try {
             windowManager.addView(root, layoutParams)
             overlayView = root
+            titleTextView = titleView
+            messageTextView = messageView
+            instructionTextView = instructionView
             reasonTextView = reasonView
         } catch (e: Exception) {
             e.printStackTrace()

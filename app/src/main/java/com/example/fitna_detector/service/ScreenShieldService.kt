@@ -51,6 +51,7 @@ class ScreenShieldService : LifecycleService() {
     companion object {
         const val NOTIFICATION_ID = 1001
         const val CHANNEL_ID = "fitna_shield_service_channel"
+        const val MIN_SHIELD_LOCKOUT_MS = 30_000L // Minimum 30 seconds hold
 
         const val ACTION_START = "com.example.fitna_detector.ACTION_START"
         const val ACTION_STOP = "com.example.fitna_detector.ACTION_STOP"
@@ -78,6 +79,7 @@ class ScreenShieldService : LifecycleService() {
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var captureJob: Job? = null
+    private var countdownJob: Job? = null
 
     private var settings = DetectionSettings()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -85,6 +87,7 @@ class ScreenShieldService : LifecycleService() {
     private var isVisualProhibited = false
     private var isMusicDetected = false
     private var isTestingShield = false
+    private var lockoutUntilMs = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -292,7 +295,7 @@ class ScreenShieldService : LifecycleService() {
 
         val visualTrigger = settings.isVisualEnabled && isVisualProhibited
         val musicTrigger = settings.isMusicEnabled && isMusicDetected
-        val shouldShow = visualTrigger || musicTrigger
+        val isCurrentlyProhibited = visualTrigger || musicTrigger
 
         val reason = when {
             visualTrigger && musicTrigger -> "Prohibited visual content & music video detected"
@@ -301,14 +304,15 @@ class ScreenShieldService : LifecycleService() {
             else -> ""
         }
 
-        if (shouldShow) {
+        if (isCurrentlyProhibited) {
             overlay.show(reason, settings.overlayOpacity)
         } else {
+            // Dismisses immediately once user stops or swaps away from the fitna content
             overlay.hide()
         }
 
         _shieldStatus.value = _shieldStatus.value.copy(
-            isShieldActive = shouldShow,
+            isShieldActive = isCurrentlyProhibited,
             isVisualProhibited = visualTrigger,
             isMusicDetected = musicTrigger,
             activeTriggerReason = reason
@@ -317,14 +321,14 @@ class ScreenShieldService : LifecycleService() {
 
     private fun testShieldTemporarily() {
         isTestingShield = true
-        overlay.show("TEST MODE: Fitna Shield active for 3 seconds\n(Verify touch and swipe passthrough)", settings.overlayOpacity)
+        overlay.show("TEST MODE (Active for 5s - Simulating Fitna Shield)", settings.overlayOpacity)
         _shieldStatus.value = _shieldStatus.value.copy(
             isShieldActive = true,
             activeTriggerReason = "Test Mode Simulation"
         )
 
         lifecycleScope.launch(Dispatchers.Main) {
-            delay(3000)
+            delay(5000)
             isTestingShield = false
             evaluateShieldTrigger()
         }
@@ -350,6 +354,9 @@ class ScreenShieldService : LifecycleService() {
     }
 
     private fun stopProtection() {
+        countdownJob?.cancel()
+        countdownJob = null
+        lockoutUntilMs = 0L
         stopScreenCapture()
         musicDetector.stop()
         overlay.hide()
