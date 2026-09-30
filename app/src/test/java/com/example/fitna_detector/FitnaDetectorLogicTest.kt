@@ -223,6 +223,11 @@ class FitnaDetectorLogicTest {
         fun isWhitelistedPackage(pkg: String?): Boolean {
             if (pkg == null) return false
             val p = pkg.lowercase()
+            if (p.contains("quran") || p.contains("tarteel") || p.contains("islam360") ||
+                p.contains("athan") || p.contains("adhan") || p.contains("salat") ||
+                p.contains("namaz") || p.contains("muslimpro") || p.contains("ayah") || p.contains("hadith")) {
+                return true
+            }
             return p.startsWith("com.android.settings") ||
                     p.startsWith("com.android.systemui") ||
                     p.startsWith("com.google.android.apps.nexuslauncher") ||
@@ -243,6 +248,12 @@ class FitnaDetectorLogicTest {
         assertTrue(isWhitelistedPackage("com.mi.android.globallauncher"))
         assertTrue(isWhitelistedPackage("com.android.permissioncontroller"))
 
+        // Quran and Islamic apps MUST BE WHITELISTED
+        assertTrue(isWhitelistedPackage("com.quran.labs.androidquran"))
+        assertTrue(isWhitelistedPackage("com.tarteel.tarteel"))
+        assertTrue(isWhitelistedPackage("com.islam360"))
+        assertTrue(isWhitelistedPackage("com.muslimpro"))
+
         // Media and browser apps must NOT be whitelisted
         assertFalse(isWhitelistedPackage("com.google.android.youtube"))
         assertFalse(isWhitelistedPackage("com.instagram.android"))
@@ -254,10 +265,11 @@ class FitnaDetectorLogicTest {
     fun testKeywordsExemptionsAndTargeting() {
         val prohibitedKeywords = listOf(
             "official music video", "official mv", "music video", "video song",
-            "full song", "lyric video", "lyrics video", "official audio",
+            "full song", "lyric video", "lyrics video", "official audio", "official video",
             "audio song", "dance performance", "dance cover", "choreography", "item song",
             "remix song", "remix video", "lofi remix", "lofi song", "slowed + reverb",
-            "vevo", "t-series",
+            "vevo", "t-series", "coke studio", "speed records", "zee music", "sony music",
+            "tips official", "saregama", "yrf music", "soundtrack", "full album",
             "romantic scene", "romance scene", "romantic song", "romantic clip",
             "love song", "kiss scene", "kissing scene", "hot scene", "bed scene",
             "bikini", "swimsuit", "lingerie", "cleavage", "nude", "naked",
@@ -267,9 +279,13 @@ class FitnaDetectorLogicTest {
 
         val safeExemptionKeywords = listOf(
             "no music", "without music", "no instruments", "vocal only",
-            "acapella", "halal", "nasheed", "quran", "recitation", "tilawat", "lecture",
-            "speech", "tafsir", "khutbah", "podcast", "bayan", "fitna !", "islam approves",
-            "unblock screen"
+            "acapella", "halal", "nasheed", "quran", "qur'an", "koran", "surah", "sura",
+            "ayah", "ayat", "recitation", "tilawat", "lecture", "speech", "tafsir",
+            "khutbah", "podcast", "bayan", "adhan", "azan", "dua", "dhikr", "zikr",
+            "hadith", "hadeeth", "sunnah", "islamic", "alafasy", "abdul basit", "sudais",
+            "shuraim", "minshawi", "al-hussary", "mahir", "al-muaiqly", "fitna !",
+            "islam approves", "unblock screen", "bbc news", "reuters", "al jazeera",
+            "police release", "official report", "press briefing", "documentary"
         )
 
         fun isTextProhibited(text: String): Boolean {
@@ -289,13 +305,22 @@ class FitnaDetectorLogicTest {
         assertFalse("BBC News official video must be safe", isTextProhibited("BBC News: Police release official video of incident"))
         assertFalse("Reuters official report must be safe", isTextProhibited("Reuters: Official video released by department"))
 
-        // Halal / Islamic exemptions - MUST BE SAFE even if mentioning music
-        assertTrue("Nasheed without music must be exempted", !isTextProhibited("Heart soothing Islamic Nasheed without music"))
-        assertTrue("Recitation with no music must be exempted", !isTextProhibited("Surah Al-Mulk recitation [No Music]"))
-        assertTrue("Islamic lecture must be exempted", !isTextProhibited("Nouman Ali Khan Quran Tafsir Lecture"))
+        // Halal / Islamic Quran & Surah exemptions - MUST BE 100% SAFE
+        assertFalse("Surah Al-Baqarah must be safe", isTextProhibited("Surah Al-Baqarah Full | Mishary Rashid Alafasy"))
+        assertFalse("Surah Yasin must be safe", isTextProhibited("Surah Yaseen 7 Times Recitation"))
+        assertFalse("Ayat al-Kursi must be safe", isTextProhibited("Ayatul Kursi 100 Times with English Translation"))
+        assertFalse("Quran Tilawat must be safe", isTextProhibited("Heart Touching Quran Recitation by Abdul Basit"))
+        assertFalse("Islamic lecture must be safe", isTextProhibited("Nouman Ali Khan Quran Tafsir Lecture"))
+        assertFalse("Nasheed without music must be safe", isTextProhibited("Heart soothing Islamic Nasheed without music"))
+
+        // General talking, speeches, and podcasts without music - MUST BE SAFE
+        assertFalse("Podcast conversation must be safe", isTextProhibited("Lex Fridman Podcast: Conversation with Deep Learning Scientist"))
+        assertFalse("Spoken lecture must be safe", isTextProhibited("Harvard University Lecture 1: Computer Science Principles"))
 
         // Real Fitna YouTube / Media items - MUST BE FLAGGED
         assertTrue("Official music video must be flagged", isTextProhibited("Taylor Swift - Official Music Video"))
+        assertTrue("Coke Studio video must be flagged", isTextProhibited("Mix - Bulbuli | Coke Studio Bangla | Season One | Ritu Raj X Nandita"))
+        assertTrue("Coke Studio track 2 must be flagged", isTextProhibited("Kotha Koiyo Na | Coke Studio Bangla | Season 2"))
         assertTrue("Romantic couple scene must be flagged", isTextProhibited("Movie Clip - Romantic Scene in Rain"))
         assertTrue("Kissing scene must be flagged", isTextProhibited("Drama Episode 5 - Best Kiss Scene"))
         assertTrue("Lyric video song must be flagged", isTextProhibited("Hit Track 2026 - Official Lyric Video Song"))

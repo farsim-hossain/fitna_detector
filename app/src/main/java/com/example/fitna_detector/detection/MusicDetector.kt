@@ -15,6 +15,9 @@ import android.os.Looper
 import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import com.example.fitna_detector.model.AudioDetectionResult
+import org.tensorflow.lite.Interpreter
+import java.io.FileInputStream
+import java.nio.channels.FileChannel
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 
@@ -24,7 +27,8 @@ import kotlin.math.abs
  * Combines:
  * 1. High-frequency (120ms) polling of AudioManager.isMusicActive for instant reaction.
  * 2. System AudioPlaybackCallback (API 26+) for hardware stream usage attributes.
- * 3. Optional acoustic feature analysis (distinguishes music beats from pure speech when enabled).
+ * 3. On-device YAMNet Neural Audio Classifier (TensorFlow Lite, 521 audio event categories:
+ *    150 music & instrument classes vs Speech / Lectures).
  */
 class MusicDetector(
     private val context: Context,
@@ -38,6 +42,9 @@ class MusicDetector(
     private var isRunning = false
     private var allowSpeechFilter = false
 
+    // YAMNet Neural Audio Classifier (TFLite)
+    private var yamnetInterpreter: Interpreter? = null
+
     // Fast polling thread for sub-150ms audio state changes
     private var pollingThread: Thread? = null
     private val isPolling = AtomicBoolean(false)
@@ -50,6 +57,25 @@ class MusicDetector(
     private var lastResult = AudioDetectionResult()
     private var lastMediaActiveState = false
 
+    init {
+        loadYamnetModel()
+    }
+
+    private fun loadYamnetModel() {
+        try {
+            val assetFileDescriptor = context.assets.openFd("yamnet.tflite")
+            val inputStream = FileInputStream(assetFileDescriptor.fileDescriptor)
+            val fileChannel = inputStream.channel
+            val startOffset = assetFileDescriptor.startOffset
+            val declaredLength = assetFileDescriptor.declaredLength
+            val buffer = fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength)
+            yamnetInterpreter = Interpreter(buffer)
+            assetFileDescriptor.close()
+        } catch (_: Exception) {
+            yamnetInterpreter = null
+        }
+    }
+
     fun start(allowSpeechLectures: Boolean) {
         if (isRunning) return
         isRunning = true
@@ -57,10 +83,7 @@ class MusicDetector(
 
         registerSystemPlaybackCallback()
         startFastPolling()
-
-        if (allowSpeechLectures) {
-            startAcousticAnalyzer()
-        }
+        startAcousticAnalyzer()
 
         // Initial check
         checkCurrentAudioState()
@@ -87,6 +110,10 @@ class MusicDetector(
         stopFastPolling()
         unregisterSystemPlaybackCallback()
         stopAcousticAnalyzer()
+        try {
+            yamnetInterpreter?.close()
+            yamnetInterpreter = null
+        } catch (_: Exception) {}
 
         lastResult = AudioDetectionResult()
         lastMediaActiveState = false
@@ -247,12 +274,22 @@ class MusicDetector(
                 recorder.startRecording()
                 val buffer = ShortArray(bufferSize / 2)
 
+                // YAMNet accepts 15,600 samples of 16 kHz audio (0.975 seconds)
+                val yamnetBuffer = FloatArray(15600)
+                var yamnetIndex = 0
+                val yamnetOutput = Array(1) { FloatArray(521) }
+
                 var speechPauseCount = 0
                 var windowCount = 0
 
                 while (isRecording.get()) {
                     val read = recorder.read(buffer, 0, buffer.size)
                     if (read > 0) {
+                        for (i in 0 until read) {
+                            yamnetBuffer[yamnetIndex] = buffer[i] / 32768.0f
+                            yamnetIndex = (yamnetIndex + 1) % 15600
+                        }
+
                         var energySum = 0.0
                         var zeroCrossings = 0
 
@@ -273,12 +310,41 @@ class MusicDetector(
                         windowCount++
 
                         if (windowCount >= 4) {
-                            val pauseRatio = speechPauseCount.toFloat() / windowCount
-                            val isSpeech = pauseRatio > 0.25f || (zcr > 0.15f && pauseRatio > 0.15f)
+                            val interp = yamnetInterpreter
+                            if (interp != null) {
+                                try {
+                                    interp.run(yamnetBuffer, yamnetOutput)
+                                    val probs = yamnetOutput[0]
 
-                            val currentMediaActive = audioManager.isMusicActive
-                            if (currentMediaActive) {
-                                evaluateAudioStateWithSpeech(isSpeech)
+                                    var maxMusicScore = 0f
+                                    for (c in 132..276) {
+                                        if (probs[c] > maxMusicScore) maxMusicScore = probs[c]
+                                    }
+                                    for (c in intArrayOf(24, 29, 30, 31, 33)) {
+                                        if (probs[c] > maxMusicScore) maxMusicScore = probs[c]
+                                    }
+
+                                    var maxSpeechScore = 0f
+                                    for (c in 0..4) {
+                                        if (probs[c] > maxSpeechScore) maxSpeechScore = probs[c]
+                                    }
+
+                                    val isMusic = maxMusicScore >= 0.20f && maxMusicScore >= maxSpeechScore
+                                    val isSpeech = maxSpeechScore > maxMusicScore && maxSpeechScore > 0.25f
+
+                                    val currentMediaActive = audioManager.isMusicActive
+                                    if (currentMediaActive) {
+                                        evaluateAudioStateWithSpeech(isSpeech, isMusic, maxMusicScore)
+                                    }
+                                } catch (_: Exception) {}
+                            } else {
+                                val pauseRatio = speechPauseCount.toFloat() / windowCount
+                                val isSpeech = pauseRatio > 0.25f || (zcr > 0.15f && pauseRatio > 0.15f)
+
+                                val currentMediaActive = audioManager.isMusicActive
+                                if (currentMediaActive) {
+                                    evaluateAudioStateWithSpeech(isSpeech, !isSpeech, 0.75f)
+                                }
                             }
 
                             speechPauseCount = 0
@@ -302,12 +368,15 @@ class MusicDetector(
         }
     }
 
-    private fun evaluateAudioStateWithSpeech(isSpeech: Boolean) {
-        val isMusic = !isSpeech
+    private fun evaluateAudioStateWithSpeech(
+        isSpeech: Boolean,
+        isMusicDetectedOverride: Boolean = !isSpeech,
+        confidence: Float = 0.90f
+    ) {
         val result = AudioDetectionResult(
-            isMusicDetected = isMusic,
-            confidence = if (isMusic) 0.90f else 0.2f,
-            sourceDescription = if (isSpeech) "Speech / Lecture (Permitted)" else "Music Beat Detected",
+            isMusicDetected = isMusicDetectedOverride,
+            confidence = confidence,
+            sourceDescription = if (isMusicDetectedOverride) "YAMNet Neural Music Detected" else "Speech / Lecture (Permitted)",
             isSpeechLikely = isSpeech
         )
 

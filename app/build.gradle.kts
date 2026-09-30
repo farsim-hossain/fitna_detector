@@ -34,7 +34,7 @@ android {
         compose = true
     }
     androidResources {
-        noCompress += "onnx"
+        noCompress += listOf("onnx", "tflite")
     }
 }
 
@@ -50,6 +50,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.service)
     implementation(libs.onnxruntime.android)
+    implementation("org.tensorflow:tensorflow-lite:2.16.1")
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

@@ -69,10 +69,11 @@ class FitnaAccessibilityService : AccessibilityService() {
     private val prohibitedKeywords = listOf(
         // Music & Songs (Multi-word or distinct music video markers)
         "official music video", "official mv", "music video", "video song",
-        "full song", "lyric video", "lyrics video", "official audio",
+        "full song", "lyric video", "lyrics video", "official audio", "official video",
         "audio song", "dance performance", "dance cover", "choreography", "item song",
         "remix song", "remix video", "lofi remix", "lofi song", "slowed + reverb",
-        "vevo", "t-series",
+        "vevo", "t-series", "coke studio", "speed records", "zee music", "sony music",
+        "tips official", "saregama", "yrf music", "soundtrack", "full album",
         // Romantic, Couple & Prohibited visual scenes
         "romantic scene", "romance scene", "romantic song", "romantic clip",
         "love song", "kiss scene", "kissing scene", "hot scene", "bed scene",
@@ -81,22 +82,41 @@ class FitnaAccessibilityService : AccessibilityService() {
         "sensual scene", "erotic scene"
     )
 
-    // Exemptions for Islamic lectures, speeches, nasheeds, and Quran recitations
+    // Exemptions for Quran recitations, Surahs, Islamic lectures, speeches, nasheeds, and news
     private val safeExemptionKeywords = listOf(
         "no music", "without music", "no instruments", "vocal only",
-        "acapella", "halal", "nasheed", "quran", "recitation", "tilawat", "lecture",
-        "speech", "tafsir", "khutbah", "podcast", "bayan", "fitna !", "islam approves",
-        "unblock screen"
+        "acapella", "halal", "nasheed", "quran", "qur'an", "koran", "surah", "sura",
+        "ayah", "ayat", "recitation", "tilawat", "lecture", "speech", "tafsir",
+        "khutbah", "podcast", "bayan", "adhan", "azan", "dua", "dhikr", "zikr",
+        "hadith", "hadeeth", "sunnah", "islamic", "alafasy", "abdul basit", "sudais",
+        "shuraim", "minshawi", "al-hussary", "mahir", "al-muaiqly", "fitna !",
+        "islam approves", "unblock screen", "bbc news", "reuters", "al jazeera",
+        "police release", "official report", "press briefing", "documentary"
     )
 
     /**
-     * Whitelists system UI, settings, launchers, and device utilities.
+     * Whitelists system UI, settings, launchers, device utilities, and Quran/Islamic apps.
      * The shield will NEVER trigger when the user is in these apps.
      */
     private fun isWhitelistedPackage(packageName: CharSequence?): Boolean {
         if (packageName == null) return false
         val pkg = packageName.toString().lowercase()
         if (pkg == applicationContext.packageName) return true
+
+        // Whitelist all Quran and Islamic prayer/study apps
+        if (pkg.contains("quran") ||
+            pkg.contains("tarteel") ||
+            pkg.contains("islam360") ||
+            pkg.contains("athan") ||
+            pkg.contains("adhan") ||
+            pkg.contains("salat") ||
+            pkg.contains("namaz") ||
+            pkg.contains("muslimpro") ||
+            pkg.contains("ayah") ||
+            pkg.contains("hadith")) {
+            return true
+        }
+
         return pkg.startsWith("com.android.settings") ||
                 pkg.startsWith("com.android.systemui") ||
                 pkg.startsWith("com.google.android.apps.nexuslauncher") ||
@@ -223,7 +243,7 @@ class FitnaAccessibilityService : AccessibilityService() {
         queue.add(root)
 
         var inspected = 0
-        while (queue.isNotEmpty() && inspected < 50) {
+        while (queue.isNotEmpty() && inspected < 250) {
             val node = queue.removeFirst()
             inspected++
 
