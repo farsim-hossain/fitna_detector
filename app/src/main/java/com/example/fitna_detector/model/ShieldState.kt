@@ -48,5 +48,7 @@ data class DetectionSettings(
     val isMusicEnabled: Boolean = true,
     val sensitivity: SensitivityLevel = SensitivityLevel.BALANCED,
     val allowSpeechLectures: Boolean = false, // Immediate detection for music & videos by default
-    val overlayOpacity: Float = 0.93f
+    val overlayOpacity: Float = 0.93f,
+    val customAllowedKeywords: Set<String> = emptySet(),
+    val customFlaggedKeywords: Set<String> = emptySet()
 )

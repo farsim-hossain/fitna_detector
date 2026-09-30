@@ -1,5 +1,6 @@
 package com.example.fitna_detector
 
+import com.example.fitna_detector.model.ContentFilter
 import com.example.fitna_detector.model.DetectionSettings
 import com.example.fitna_detector.model.SensitivityLevel
 import org.junit.Assert.*
@@ -443,5 +444,76 @@ class FitnaDetectorLogicTest {
             isOverlay = false
         )
         assertTrue("Explicit content must trigger: score=$explicitScore", explicitScore >= threshold)
+    }
+
+    @Test
+    fun testContentFilterCustomAllowedKeywordsOverrideProhibited() {
+        // Even if title contains "coke studio" or "official music video", if user added an allowed keyword, it is ALLOWED!
+        val title = "Coke Studio Bangla | Bulbuli | Special Edition"
+        val customAllowed = setOf("bulbuli")
+
+        val result = ContentFilter.evaluateText(
+            text = title,
+            customAllowed = customAllowed
+        )
+
+        assertEquals("Custom allowed keyword must override default prohibited keywords",
+            ContentFilter.MatchResult.ALLOWED, result)
+    }
+
+    @Test
+    fun testContentFilterCustomFlaggedKeywordsMultiLanguage() {
+        // 1. Bengali custom flagged keyword: "গান" (Song) or "নাটক" (Drama)
+        val bengaliTitle = "নতুন বাংলা গান ২০২৪ | New Track"
+        val resultBengali = ContentFilter.evaluateText(
+            text = bengaliTitle,
+            customFlagged = setOf("গান")
+        )
+        assertEquals(ContentFilter.MatchResult.PROHIBITED, resultBengali)
+
+        // 2. Arabic custom flagged keyword: "رقص" (Dance)
+        val arabicTitle = "أجمل حفلة رقص شرقي"
+        val resultArabic = ContentFilter.evaluateText(
+            text = arabicTitle,
+            customFlagged = setOf("رقص")
+        )
+        assertEquals(ContentFilter.MatchResult.PROHIBITED, resultArabic)
+
+        // 3. Urdu custom flagged keyword: "موسیقی" (Music)
+        val urduTitle = "شام کی موسیقی محفل"
+        val resultUrdu = ContentFilter.evaluateText(
+            text = urduTitle,
+            customFlagged = setOf("موسیقی")
+        )
+        assertEquals(ContentFilter.MatchResult.PROHIBITED, resultUrdu)
+    }
+
+    @Test
+    fun testContentFilterSafeExemptionsForQuranAndSpeech() {
+        // Quran recitations and Surahs must always be ALLOWED (never prohibited)
+        val quran1 = "Surah Al-Baqarah Full Recitation by Mishary Rashid Alafasy"
+        assertEquals(ContentFilter.MatchResult.ALLOWED, ContentFilter.evaluateText(quran1))
+
+        val quran2 = "Beautiful Tilawat of Surah Ar-Rahman (No Music)"
+        assertEquals(ContentFilter.MatchResult.ALLOWED, ContentFilter.evaluateText(quran2))
+
+        val lecture = "Islamic Khutbah & Bayan on Modesty and Lowering the Gaze"
+        assertEquals(ContentFilter.MatchResult.ALLOWED, ContentFilter.evaluateText(lecture))
+
+        val adhan = "Peaceful Fajr Adhan from Makkah"
+        assertEquals(ContentFilter.MatchResult.ALLOWED, ContentFilter.evaluateText(adhan))
+    }
+
+    @Test
+    fun testContentFilterCaseInsensitiveAndWhitespace() {
+        val title = "   OFFICIAL MUSIC VIDEO 4K   "
+        val customAllowed = setOf("   official music video   ")
+
+        // Allowed list trims and matches case-insensitively
+        val result = ContentFilter.evaluateText(
+            text = title,
+            customAllowed = customAllowed
+        )
+        assertEquals(ContentFilter.MatchResult.ALLOWED, result)
     }
 }

@@ -14,6 +14,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import androidx.annotation.RequiresApi
 import com.example.fitna_detector.detection.MusicDetector
 import com.example.fitna_detector.detection.VisualDetector
+import com.example.fitna_detector.model.ContentFilter
 import com.example.fitna_detector.model.DetectionSettings
 import com.example.fitna_detector.model.ShieldStatus
 import com.example.fitna_detector.overlay.RedShieldOverlay
@@ -64,35 +65,7 @@ class FitnaAccessibilityService : AccessibilityService() {
 
     private val isScreenshotPending = AtomicBoolean(false)
     private var continuousScannerJob: Job? = null
-
-    // Targeted phrases for YouTube music videos and romantic/intimate scenes (avoid broad single words)
-    private val prohibitedKeywords = listOf(
-        // Music & Songs (Multi-word or distinct music video markers)
-        "official music video", "official mv", "music video", "video song",
-        "full song", "lyric video", "lyrics video", "official audio", "official video",
-        "audio song", "dance performance", "dance cover", "choreography", "item song",
-        "remix song", "remix video", "lofi remix", "lofi song", "slowed + reverb",
-        "vevo", "t-series", "coke studio", "speed records", "zee music", "sony music",
-        "tips official", "saregama", "yrf music", "soundtrack", "full album",
-        // Romantic, Couple & Prohibited visual scenes
-        "romantic scene", "romance scene", "romantic song", "romantic clip",
-        "love song", "kiss scene", "kissing scene", "hot scene", "bed scene",
-        "bikini", "swimsuit", "lingerie", "cleavage", "nude", "naked",
-        "intimate scene", "love scene", "couple scene", "dating show",
-        "sensual scene", "erotic scene"
-    )
-
-    // Exemptions for Quran recitations, Surahs, Islamic lectures, speeches, nasheeds, and news
-    private val safeExemptionKeywords = listOf(
-        "no music", "without music", "no instruments", "vocal only",
-        "acapella", "halal", "nasheed", "quran", "qur'an", "koran", "surah", "sura",
-        "ayah", "ayat", "recitation", "tilawat", "lecture", "speech", "tafsir",
-        "khutbah", "podcast", "bayan", "adhan", "azan", "dua", "dhikr", "zikr",
-        "hadith", "hadeeth", "sunnah", "islamic", "alafasy", "abdul basit", "sudais",
-        "shuraim", "minshawi", "al-hussary", "mahir", "al-muaiqly", "fitna !",
-        "islam approves", "unblock screen", "bbc news", "reuters", "al jazeera",
-        "police release", "official report", "press briefing", "documentary"
-    )
+    private var isContentExplicitlyAllowed = false
 
     /**
      * Whitelists system UI, settings, launchers, device utilities, and Quran/Islamic apps.
@@ -157,12 +130,26 @@ class FitnaAccessibilityService : AccessibilityService() {
                 pkg.contains("vimeo") ||
                 pkg.contains("dailymotion") ||
                 pkg.contains("netflix") ||
-                pkg.contains("reels")
+                pkg.contains("reels") ||
+                pkg.contains("smarttube") ||
+                pkg.contains("newpipe") ||
+                pkg.contains("vlc") ||
+                pkg.contains("mxtech") ||
+                pkg.contains("player") ||
+                pkg.contains("video")
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
+
+        val prefs = getSharedPreferences("fitna_detector_prefs", Context.MODE_PRIVATE)
+        val savedAllowed = prefs.getStringSet("custom_allowed_keywords", emptySet()) ?: emptySet()
+        val savedFlagged = prefs.getStringSet("custom_flagged_keywords", emptySet()) ?: emptySet()
+        settings = settings.copy(
+            customAllowedKeywords = savedAllowed,
+            customFlaggedKeywords = savedFlagged
+        )
 
         audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         overlay = RedShieldOverlay(this, isAccessibilityMode = true)
@@ -191,6 +178,7 @@ class FitnaAccessibilityService : AccessibilityService() {
             // Immediate full unblock when in Settings, Home, or system utility
             isKeywordProhibited = false
             isVisualProhibited = false
+            isContentExplicitlyAllowed = false
             mainHandler.post {
                 overlay.hide()
                 evaluateShieldTrigger()
@@ -231,13 +219,15 @@ class FitnaAccessibilityService : AccessibilityService() {
 
         val pkg = root.packageName
         if (isWhitelistedPackage(pkg)) {
-            if (isKeywordProhibited) {
+            if (isKeywordProhibited || isContentExplicitlyAllowed) {
                 isKeywordProhibited = false
+                isContentExplicitlyAllowed = false
                 mainHandler.post { evaluateShieldTrigger() }
             }
             return
         }
 
+        var foundAllowedTitle = false
         var foundProhibitedTitle = false
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         queue.add(root)
@@ -247,23 +237,31 @@ class FitnaAccessibilityService : AccessibilityService() {
             val node = queue.removeFirst()
             inspected++
 
-            val text = node.text?.toString()?.lowercase() ?: ""
-            val contentDesc = node.contentDescription?.toString()?.lowercase() ?: ""
-            val combined = "$text $contentDesc"
+            val text = node.text?.toString() ?: ""
+            val contentDesc = node.contentDescription?.toString() ?: ""
+            val combined = "$text $contentDesc".trim()
 
-            // Check if node contains safe exemption (e.g. "no music", "quran", "lecture")
-            val isExempt = safeExemptionKeywords.any { combined.contains(it) }
-
-            if (!isExempt) {
-                for (kw in prohibitedKeywords) {
-                    if (combined.contains(kw)) {
-                        foundProhibitedTitle = true
-                        break
+            if (combined.isNotEmpty()) {
+                val match = ContentFilter.evaluateText(
+                    text = combined,
+                    customAllowed = settings.customAllowedKeywords,
+                    customFlagged = settings.customFlaggedKeywords
+                )
+                when (match) {
+                    ContentFilter.MatchResult.ALLOWED -> {
+                        foundAllowedTitle = true
                     }
+                    ContentFilter.MatchResult.PROHIBITED -> {
+                        foundProhibitedTitle = true
+                    }
+                    ContentFilter.MatchResult.NEUTRAL -> {}
                 }
             }
 
-            if (foundProhibitedTitle) break
+            if (foundAllowedTitle) {
+                // User Allow List or Quran exemption takes precedence
+                break
+            }
 
             for (i in 0 until node.childCount) {
                 val child = node.getChild(i)
@@ -271,8 +269,12 @@ class FitnaAccessibilityService : AccessibilityService() {
             }
         }
 
-        if (foundProhibitedTitle != isKeywordProhibited) {
-            isKeywordProhibited = foundProhibitedTitle
+        val newAllowed = foundAllowedTitle
+        val newProhibited = !foundAllowedTitle && foundProhibitedTitle
+
+        if (newProhibited != isKeywordProhibited || newAllowed != isContentExplicitlyAllowed) {
+            isKeywordProhibited = newProhibited
+            isContentExplicitlyAllowed = newAllowed
             mainHandler.post { evaluateShieldTrigger() }
         }
     }
@@ -299,9 +301,10 @@ class FitnaAccessibilityService : AccessibilityService() {
 
                 // If user is in Settings, Home Launcher, or whitelisted app, keep shield off
                 if (isWhitelistedPackage(currentPkg)) {
-                    if (isKeywordProhibited || isVisualProhibited || overlay.isShowing()) {
+                    if (isKeywordProhibited || isVisualProhibited || isContentExplicitlyAllowed || overlay.isShowing()) {
                         isKeywordProhibited = false
                         isVisualProhibited = false
+                        isContentExplicitlyAllowed = false
                         mainHandler.post { overlay.hide() }
                     }
                     delay(300.milliseconds)
@@ -408,6 +411,19 @@ class FitnaAccessibilityService : AccessibilityService() {
             return
         }
 
+        // If content is explicitly allowed by User Allow List or Quran/lecture exemption,
+        // suppress keyword prohibition and audio music detection immediately!
+        if (isContentExplicitlyAllowed) {
+            overlay.hide()
+            _serviceStatus.value = _serviceStatus.value.copy(
+                isShieldActive = false,
+                isVisualProhibited = false,
+                isMusicDetected = false,
+                activeTriggerReason = "Allowed Content Exemption"
+            )
+            return
+        }
+
         // Visual trigger: AI frame classifier OR prohibited keyword in active video
         val visualTrigger = settings.isVisualEnabled && (isVisualProhibited || isKeywordProhibited)
         // Music trigger: Audio stream active with music/video
@@ -439,6 +455,9 @@ class FitnaAccessibilityService : AccessibilityService() {
     fun updateSettings(newSettings: DetectionSettings) {
         settings = newSettings
         musicDetector.updateSettings(newSettings.allowSpeechLectures)
+        try {
+            inspectNodeHierarchy(rootInActiveWindow)
+        } catch (_: Exception) {}
         evaluateShieldTrigger()
     }
 

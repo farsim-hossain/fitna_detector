@@ -204,7 +204,32 @@ fun FitnaDetectorDashboard(onShowSplash: () -> Unit = {}) {
     val activeStatus = if (isAccessibilityEnabled) accessibilityStatus else foregroundStatus
     val isRunning = isAccessibilityEnabled || foregroundStatus.isRunning
 
-    var settings by remember { mutableStateOf(DetectionSettings()) }
+    val prefs = remember { context.getSharedPreferences("fitna_detector_prefs", Context.MODE_PRIVATE) }
+    var settings by remember {
+        val savedAllowed = prefs.getStringSet("custom_allowed_keywords", emptySet()) ?: emptySet()
+        val savedFlagged = prefs.getStringSet("custom_flagged_keywords", emptySet()) ?: emptySet()
+        val sensitivityStr = prefs.getString("sensitivity", SensitivityLevel.BALANCED.name) ?: SensitivityLevel.BALANCED.name
+        val sensitivity = runCatching { SensitivityLevel.valueOf(sensitivityStr) }.getOrDefault(SensitivityLevel.BALANCED)
+        val allowSpeech = prefs.getBoolean("allow_speech", false)
+        val visualEnabled = prefs.getBoolean("visual_enabled", true)
+        val musicEnabled = prefs.getBoolean("music_enabled", true)
+        val opacity = prefs.getFloat("opacity", 0.93f)
+        mutableStateOf(
+            DetectionSettings(
+                isVisualEnabled = visualEnabled,
+                isMusicEnabled = musicEnabled,
+                sensitivity = sensitivity,
+                allowSpeechLectures = allowSpeech,
+                overlayOpacity = opacity,
+                customAllowedKeywords = savedAllowed,
+                customFlaggedKeywords = savedFlagged
+            )
+        )
+    }
+
+    LaunchedEffect(Unit) {
+        FitnaAccessibilityService.instance?.updateSettings(settings)
+    }
 
     var hasOverlayPermission by remember {
         mutableStateOf(Settings.canDrawOverlays(context))
@@ -220,6 +245,16 @@ fun FitnaDetectorDashboard(onShowSplash: () -> Unit = {}) {
 
     fun updateSettings(newSettings: DetectionSettings) {
         settings = newSettings
+        prefs.edit()
+            .putStringSet("custom_allowed_keywords", HashSet(newSettings.customAllowedKeywords))
+            .putStringSet("custom_flagged_keywords", HashSet(newSettings.customFlaggedKeywords))
+            .putString("sensitivity", newSettings.sensitivity.name)
+            .putBoolean("allow_speech", newSettings.allowSpeechLectures)
+            .putBoolean("visual_enabled", newSettings.isVisualEnabled)
+            .putBoolean("music_enabled", newSettings.isMusicEnabled)
+            .putFloat("opacity", newSettings.overlayOpacity)
+            .apply()
+
         FitnaAccessibilityService.instance?.updateSettings(newSettings)
 
         if (foregroundStatus.isRunning) {
@@ -292,6 +327,12 @@ fun FitnaDetectorDashboard(onShowSplash: () -> Unit = {}) {
 
             // Live Shield Monitor HUD Card
             LiveMonitorCard(shieldStatus = activeStatus)
+
+            // Personal Keyword Filters Card (Allow List & Flag List)
+            CustomKeywordFilterCard(
+                settings = settings,
+                onSettingsChanged = { updateSettings(it) }
+            )
 
             // Detection Preferences Card
             SettingsCard(
@@ -692,6 +733,239 @@ fun TestSimulationCard(
                 Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(text = "Test Red Shield (5s Preview)")
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun CustomKeywordFilterCard(
+    settings: DetectionSettings,
+    onSettingsChanged: (DetectionSettings) -> Unit
+) {
+    var selectedTab by remember { mutableIntStateOf(0) } // 0 = Allow List, 1 = Flag List
+    var inputKeyword by remember { mutableStateOf("") }
+
+    val currentList = if (selectedTab == 0) settings.customAllowedKeywords else settings.customFlaggedKeywords
+    val accentColor = if (selectedTab == 0) Color(0xFF2E7D32) else Color(0xFFC62828)
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .background(color = accentColor.copy(alpha = 0.15f), shape = CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.FilterList,
+                        contentDescription = null,
+                        tint = accentColor,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Column {
+                    Text(
+                        text = "Personal Keyword Filters",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 16.sp
+                    )
+                    Text(
+                        text = "Custom whitelists & blocklists in any language",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                }
+            }
+
+            // Tab switch: Allow List vs Flag List
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Allow List Tab
+                Button(
+                    onClick = { selectedTab = 0 },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (selectedTab == 0) Color(0xFF1B5E20) else MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = if (selectedTab == 0) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(vertical = 8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Allow List (${settings.customAllowedKeywords.size})",
+                        fontSize = 13.sp,
+                        fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+
+                // Flag List Tab
+                Button(
+                    onClick = { selectedTab = 1 },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (selectedTab == 1) Color(0xFFB71C1C) else MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = if (selectedTab == 1) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(vertical = 8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Block,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Flag List (${settings.customFlaggedKeywords.size})",
+                        fontSize = 13.sp,
+                        fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+            }
+
+            // Description info box
+            Surface(
+                color = accentColor.copy(alpha = 0.08f),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = if (selectedTab == 0)
+                        "✓ Titles containing these keywords will NEVER be blocked (overrides all detections). Supports English, Bengali, Arabic, Urdu, etc."
+                    else
+                        "✕ Titles containing these keywords will be immediately blocked by the red shield.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(10.dp)
+                )
+            }
+
+            // Input field + Add button
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = inputKeyword,
+                    onValueChange = { inputKeyword = it },
+                    placeholder = {
+                        Text(
+                            text = if (selectedTab == 0) "e.g. Nasheed, ওয়াজ, تلاوة" else "e.g. Dance, গান, رقص",
+                            fontSize = 13.sp
+                        )
+                    },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(10.dp)
+                )
+
+                Button(
+                    onClick = {
+                        val trimmed = inputKeyword.trim()
+                        if (trimmed.isNotBlank()) {
+                            if (selectedTab == 0) {
+                                val updated = settings.customAllowedKeywords + trimmed
+                                onSettingsChanged(settings.copy(customAllowedKeywords = updated))
+                            } else {
+                                val updated = settings.customFlaggedKeywords + trimmed
+                                onSettingsChanged(settings.copy(customFlaggedKeywords = updated))
+                            }
+                            inputKeyword = ""
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = accentColor),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.Add, contentDescription = "Add")
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(text = "Add", fontWeight = FontWeight.Bold)
+                }
+            }
+
+            // Keyword items / chips
+            if (currentList.isEmpty()) {
+                Text(
+                    text = if (selectedTab == 0)
+                        "No allowed keywords yet. Add keywords to safely exempt specific titled content."
+                    else
+                        "No custom flagged keywords yet. Default music/romantic filters remain active.",
+                    fontSize = 12.sp,
+                    fontStyle = FontStyle.Italic,
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+            } else {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    currentList.forEach { keyword ->
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = accentColor.copy(alpha = 0.12f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, accentColor.copy(alpha = 0.4f))
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.padding(start = 12.dp, top = 4.dp, bottom = 4.dp, end = 6.dp)
+                            ) {
+                                Text(
+                                    text = keyword,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                IconButton(
+                                    onClick = {
+                                        if (selectedTab == 0) {
+                                            val updated = settings.customAllowedKeywords - keyword
+                                            onSettingsChanged(settings.copy(customAllowedKeywords = updated))
+                                        } else {
+                                            val updated = settings.customFlaggedKeywords - keyword
+                                            onSettingsChanged(settings.copy(customFlaggedKeywords = updated))
+                                        }
+                                    },
+                                    modifier = Modifier.size(22.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Remove $keyword",
+                                        tint = accentColor,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
