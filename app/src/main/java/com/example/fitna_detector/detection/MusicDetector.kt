@@ -56,6 +56,7 @@ class MusicDetector(
     // Current detection state
     private var lastResult = AudioDetectionResult()
     private var lastMediaActiveState = false
+    private var lastMusicContentTypeState = false
 
     init {
         loadYamnetModel()
@@ -117,6 +118,7 @@ class MusicDetector(
 
         lastResult = AudioDetectionResult()
         lastMediaActiveState = false
+        lastMusicContentTypeState = false
         onMusicDetectedChanged(lastResult)
     }
 
@@ -127,10 +129,19 @@ class MusicDetector(
             while (isPolling.get()) {
                 try {
                     val isActiveNow = audioManager.isMusicActive
-                    if (isActiveNow != lastMediaActiveState) {
+                    val hasMusicContentType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        try {
+                            audioManager.activePlaybackConfigurations.any { config ->
+                                config.audioAttributes.contentType == AudioAttributes.CONTENT_TYPE_MUSIC
+                            }
+                        } catch (_: Exception) { false }
+                    } else { false }
+
+                    if (isActiveNow != lastMediaActiveState || hasMusicContentType != lastMusicContentTypeState) {
                         lastMediaActiveState = isActiveNow
+                        lastMusicContentTypeState = hasMusicContentType
                         mainHandler.post {
-                            evaluateAudioState(isActiveNow)
+                            evaluateAudioState(isActiveNow, hasMusicContentType)
                         }
                     }
                     Thread.sleep(120) // 120ms polling interval for lightning-fast reaction
@@ -196,7 +207,15 @@ class MusicDetector(
 
     private fun checkCurrentAudioState() {
         val isMusicActive = audioManager.isMusicActive
-        evaluateAudioState(isMusicActive, false)
+        val hasMusicContentType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                audioManager.activePlaybackConfigurations.any { config ->
+                    config.audioAttributes.contentType == AudioAttributes.CONTENT_TYPE_MUSIC
+                }
+            } catch (_: Exception) { false }
+        } else { false }
+
+        evaluateAudioState(isMusicActive, hasMusicContentType)
     }
 
     private fun evaluateAudioState(isSystemMediaActive: Boolean, isExplicitMusicStream: Boolean = false) {
@@ -207,18 +226,19 @@ class MusicDetector(
         if (!isSystemMediaActive) {
             isDetected = false
             source = "Quiet / No Media"
-        } else if (isExplicitMusicStream) {
-            // Explicit hardware stream marked as CONTENT_TYPE_MUSIC (Spotify, Music players)
+        } else if (isRecording.get() && lastResult.isSpeechLikely && allowSpeechFilter) {
+            // Speech detected and user enabled Allow Spoken Lectures & Quran
+            isSpeech = true
+            isDetected = false
+            source = "Speech / Lecture (Permitted)"
+        } else if (isRecording.get() && lastResult.isMusicDetected) {
+            // Acoustic neural classifier detected music audio
+            isSpeech = false
             isDetected = true
-            source = "Music Stream"
-        } else if (allowSpeechFilter) {
-            // Speech filter mode: Check acoustic analysis
-            isSpeech = lastResult.isSpeechLikely
-            isDetected = !isSpeech
-            source = if (isSpeech) "Speech / Lecture (Permitted)" else "Music Playback"
+            source = "Music Track (Acoustic Match)"
         } else {
-            // General media playback (could be news, speech, or video)
-            // Relies on title/video metadata in video apps or acoustic analyzer
+            // General media playback (could be news, speech, lecture, or video)
+            // Relies on title/video metadata in video apps or dedicated audio player rules in the service
             isDetected = false
             source = "Spoken Media / News"
         }
@@ -340,10 +360,11 @@ class MusicDetector(
                             } else {
                                 val pauseRatio = speechPauseCount.toFloat() / windowCount
                                 val isSpeech = pauseRatio > 0.25f || (zcr > 0.15f && pauseRatio > 0.15f)
+                                val isMusic = !isSpeech && avgEnergy > 250.0 && (zcr < 0.12f || zcr > 0.35f)
 
                                 val currentMediaActive = audioManager.isMusicActive
                                 if (currentMediaActive) {
-                                    evaluateAudioStateWithSpeech(isSpeech, !isSpeech, 0.75f)
+                                    evaluateAudioStateWithSpeech(isSpeech, isMusic, 0.75f)
                                 }
                             }
 
@@ -370,13 +391,18 @@ class MusicDetector(
 
     private fun evaluateAudioStateWithSpeech(
         isSpeech: Boolean,
-        isMusicDetectedOverride: Boolean = !isSpeech,
+        isMusic: Boolean,
         confidence: Float = 0.90f
     ) {
+        val source = when {
+            isSpeech -> "Speech / Lecture (Permitted)"
+            isMusic -> "YAMNet Neural Music Detected"
+            else -> "General Audio / Ambient"
+        }
         val result = AudioDetectionResult(
-            isMusicDetected = isMusicDetectedOverride,
+            isMusicDetected = isMusic,
             confidence = confidence,
-            sourceDescription = if (isMusicDetectedOverride) "YAMNet Neural Music Detected" else "Speech / Lecture (Permitted)",
+            sourceDescription = source,
             isSpeechLikely = isSpeech
         )
 

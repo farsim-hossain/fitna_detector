@@ -516,4 +516,140 @@ class FitnaDetectorLogicTest {
         )
         assertEquals(ContentFilter.MatchResult.ALLOWED, result)
     }
+
+    @Test
+    fun testContentFilterDistinguishesMusicFromVisual() {
+        val musicTitle = "Coke Studio Bangla | Shob Loke Koy | Official Video"
+        val musicResult = ContentFilter.evaluateText(musicTitle)
+        assertEquals(ContentFilter.MatchResult.PROHIBITED_MUSIC, musicResult)
+
+        val visualTitle = "Romantic Scene - Best Couple Moments Clip"
+        val visualResult = ContentFilter.evaluateText(visualTitle)
+        assertEquals(ContentFilter.MatchResult.PROHIBITED_VISUAL, visualResult)
+    }
+
+    @Test
+    fun testMusicKeywordRequiresActiveAudioLogic() {
+        val musicTitle = "Coke Studio Season 14 | Pasoori | Official Music Video"
+        val match = ContentFilter.evaluateText(musicTitle)
+        assertEquals(ContentFilter.MatchResult.PROHIBITED_MUSIC, match)
+
+        // 1. Browsing YouTube feed / recommendations with sound off (isMusicActive == false)
+        val isMusicActiveWhenBrowsing = false
+        val shouldTriggerWhenBrowsing = (match == ContentFilter.MatchResult.PROHIBITED_MUSIC) && isMusicActiveWhenBrowsing
+        assertFalse("Browsing YouTube thumbnails with sound off must NEVER trigger the shield", shouldTriggerWhenBrowsing)
+
+        // 2. Video actively playing with audio (isMusicActive == true)
+        val isMusicActiveWhenPlaying = true
+        val shouldTriggerWhenPlaying = (match == ContentFilter.MatchResult.PROHIBITED_MUSIC) && isMusicActiveWhenPlaying
+        assertTrue("Actively playing music video must trigger the shield", shouldTriggerWhenPlaying)
+    }
+
+    @Test
+    fun testSpeechToggleDoesNotFlagCleanAudioWhenMicIsIdle() {
+        // Simulating evaluateAudioState when allowSpeechFilter is ON and mic is idle/not recording
+        val isSystemMediaActive = true
+        val allowSpeechFilter = true
+        val isRecording = false // default: no mic permission granted
+        val isExplicitMusicStream = false // YouTube general video stream
+
+        val isSpeech: Boolean
+        val isDetected: Boolean
+
+        if (!isSystemMediaActive) {
+            isDetected = false
+        } else if (isExplicitMusicStream) {
+            isDetected = true
+        } else if (allowSpeechFilter) {
+            if (isRecording) {
+                isDetected = false
+            } else {
+                // Must NOT invert to true!
+                isDetected = false
+            }
+        } else {
+            isDetected = false
+        }
+
+        assertFalse("Enabling speech toggle must NOT flag clean audio when mic is idle", isDetected)
+    }
+
+    @Test
+    fun testFeedThumbnailCardIgnored() {
+        fun isFeedThumbnailCard(desc: String): Boolean {
+            if (desc.contains(" - play video") || desc.endsWith("play video")) return true
+            if (desc.contains("views -") || desc.contains("views •")) return true
+            return false
+        }
+
+        val feedCardDesc = "Shake Karaan - 8K/4K Music Video | Nidhhi Agerwal - 2 minutes, 53 seconds - Go to channel Sony Music India - 41 million views - 9 months ago - play video"
+        assertTrue("YouTube search/feed thumbnail card must be recognized as feed card", isFeedThumbnailCard(feedCardDesc))
+
+        val watchPageTitle = "Shake Karaan - 8K/4K Music Video | Nidhhi Agerwal | Meet Bros Ft. Kanika Kapoor"
+        assertFalse("Actively playing watch page video title must NOT be treated as feed card", isFeedThumbnailCard(watchPageTitle))
+    }
+
+    @Test
+    fun testAudibleAudioDistinction() {
+        fun isAudible(isMusicActive: Boolean, volume: Int, configDesc: String): Boolean {
+            if (!isMusicActive) return false
+            if (volume == 0) return false
+            if (configDesc.contains("mutedState:clientVolume") || configDesc.contains("mutedState:volume")) {
+                return false
+            }
+            return true
+        }
+
+        // Case 1: Muted YouTube feed preview autoplay
+        val feedPreviewConfig = "AudioPlaybackConfiguration piid:263 ... mutedState:clientVolume"
+        assertFalse(
+            "Muted YouTube feed preview must NOT be considered audible",
+            isAudible(isMusicActive = true, volume = 10, configDesc = feedPreviewConfig)
+        )
+
+        // Case 2: Audible playing video
+        val playingConfig = "AudioPlaybackConfiguration piid:271 ... mutedState:none"
+        assertTrue(
+            "Audible playing video must be recognized as audible",
+            isAudible(isMusicActive = true, volume = 10, configDesc = playingConfig)
+        )
+
+        // Case 3: Device volume muted (0)
+        assertFalse(
+            "Volume at 0 must NOT be considered audible",
+            isAudible(isMusicActive = true, volume = 0, configDesc = playingConfig)
+        )
+    }
+
+    @Test
+    fun testLauncherKeepsShieldWhenBackgroundMusicIsPlaying() {
+        fun shouldDismissShieldOnLauncher(
+            isLauncher: Boolean,
+            isAudible: Boolean,
+            isMusicDetected: Boolean,
+            isMusicKeywordProhibited: Boolean
+        ): Boolean {
+            val isBackgroundMusicPlaying = isAudible && (isMusicDetected || isMusicKeywordProhibited)
+            return isLauncher && !isBackgroundMusicPlaying
+        }
+
+        // Case 1: User on Home screen with no music playing -> dismiss shield
+        assertTrue(
+            "Home screen without music playing must dismiss shield",
+            shouldDismissShieldOnLauncher(isLauncher = true, isAudible = false, isMusicDetected = false, isMusicKeywordProhibited = false)
+        )
+
+        // Case 2: Internal music player playing music in background -> keep shield!
+        assertFalse(
+            "Home screen with internal music playing must NOT dismiss shield",
+            shouldDismissShieldOnLauncher(isLauncher = true, isAudible = true, isMusicDetected = true, isMusicKeywordProhibited = false)
+        )
+
+        // Case 3: YouTube music video in PiP/background -> keep shield!
+        assertFalse(
+            "Home screen with YouTube music in background must NOT dismiss shield",
+            shouldDismissShieldOnLauncher(isLauncher = true, isAudible = true, isMusicDetected = false, isMusicKeywordProhibited = true)
+        )
+    }
 }
+

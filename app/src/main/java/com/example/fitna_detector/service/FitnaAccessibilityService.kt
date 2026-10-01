@@ -3,6 +3,7 @@ package com.example.fitna_detector.service
 import android.accessibilityservice.AccessibilityService
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.media.AudioManager
 import android.os.Build
@@ -11,6 +12,7 @@ import android.os.Looper
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import androidx.annotation.RequiresApi
 import com.example.fitna_detector.detection.MusicDetector
 import com.example.fitna_detector.detection.VisualDetector
@@ -61,35 +63,38 @@ class FitnaAccessibilityService : AccessibilityService() {
     private var settings = DetectionSettings()
     private var isVisualProhibited = false
     private var isMusicDetected = false
-    private var isKeywordProhibited = false
-
+    private var isVisualKeywordProhibited = false
+    private var isMusicKeywordProhibited = false
+    private var isContentExplicitlyAllowed = false
     private val isScreenshotPending = AtomicBoolean(false)
     private var continuousScannerJob: Job? = null
-    private var isContentExplicitlyAllowed = false
 
     /**
-     * Whitelists system UI, settings, launchers, device utilities, and Quran/Islamic apps.
-     * The shield will NEVER trigger when the user is in these apps.
+     * Checks if the active package is a Quran, Hadith, or Islamic prayer app.
+     * These apps are 100% exempted from any shield block.
      */
-    private fun isWhitelistedPackage(packageName: CharSequence?): Boolean {
+    fun isWhitelistedQuranOrPrayerApp(packageName: CharSequence?): Boolean {
+        if (packageName == null) return false
+        val pkg = packageName.toString().lowercase()
+        return pkg.contains("quran") ||
+                pkg.contains("tarteel") ||
+                pkg.contains("islam360") ||
+                pkg.contains("athan") ||
+                pkg.contains("adhan") ||
+                pkg.contains("salat") ||
+                pkg.contains("namaz") ||
+                pkg.contains("muslimpro") ||
+                pkg.contains("ayah") ||
+                pkg.contains("hadith")
+    }
+
+    /**
+     * Checks if package is system UI, settings, dialer, launcher.
+     */
+    fun isLauncherOrSystemUI(packageName: CharSequence?): Boolean {
         if (packageName == null) return false
         val pkg = packageName.toString().lowercase()
         if (pkg == applicationContext.packageName) return true
-
-        // Whitelist all Quran and Islamic prayer/study apps
-        if (pkg.contains("quran") ||
-            pkg.contains("tarteel") ||
-            pkg.contains("islam360") ||
-            pkg.contains("athan") ||
-            pkg.contains("adhan") ||
-            pkg.contains("salat") ||
-            pkg.contains("namaz") ||
-            pkg.contains("muslimpro") ||
-            pkg.contains("ayah") ||
-            pkg.contains("hadith")) {
-            return true
-        }
-
         return pkg.startsWith("com.android.settings") ||
                 pkg.startsWith("com.android.systemui") ||
                 pkg.startsWith("com.google.android.apps.nexuslauncher") ||
@@ -110,6 +115,51 @@ class FitnaAccessibilityService : AccessibilityService() {
                 pkg.contains("contacts") ||
                 pkg.contains("deskclock") ||
                 pkg.contains("calculator")
+    }
+
+    fun isWhitelistedPackage(packageName: CharSequence?): Boolean {
+        return isWhitelistedQuranOrPrayerApp(packageName) || isLauncherOrSystemUI(packageName)
+    }
+
+    /**
+     * Dynamic detection of ANY audio player or music app installed on device:
+     * - Checks OS ApplicationInfo.CATEGORY_AUDIO (API 26+)
+     * - Matches local MP3 players, built-in AOSP Music, OEM players, and streaming services.
+     */
+    fun isAudioPlayerPackage(packageName: CharSequence?): Boolean {
+        if (packageName == null) return false
+        val pkg = packageName.toString().lowercase()
+        if (isWhitelistedQuranOrPrayerApp(pkg)) return false
+        if (pkg.contains("video") || pkg.contains("camera")) return false
+
+        // 1. Check Android OS App Category (API 26+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                val appInfo = packageManager.getApplicationInfo(pkg, 0)
+                if (appInfo.category == ApplicationInfo.CATEGORY_AUDIO) {
+                    return true
+                }
+            } catch (_: Exception) {}
+        }
+
+        // 2. Audio/Music app package patterns
+        return pkg.contains("music") ||
+                pkg.contains("audio") ||
+                pkg.contains("mp3") ||
+                pkg.contains("audioplayer") ||
+                pkg.contains("musicplayer") ||
+                pkg.contains("sound") ||
+                pkg.contains("spotify") ||
+                pkg.contains("deezer") ||
+                pkg.contains("tidal") ||
+                pkg.contains("soundcloud") ||
+                pkg.contains("jiobeats") ||
+                pkg.contains("gaana") ||
+                pkg.contains("anghami") ||
+                pkg.contains("poweramp") ||
+                pkg.contains("aimp") ||
+                pkg.contains("winamp") ||
+                pkg.contains("shazam")
     }
 
     /**
@@ -139,6 +189,45 @@ class FitnaAccessibilityService : AccessibilityService() {
                 pkg.contains("video")
     }
 
+    /**
+     * Checks if audible media audio is actually playing through the device speakers.
+     * Returns false if volume is 0 or if all audio tracks are muted (e.g. YouTube feed preview).
+     */
+    fun isAudibleAudioActive(): Boolean {
+        if (!audioManager.isMusicActive) return false
+        val volume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        if (volume == 0) return false
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                val configs = audioManager.activePlaybackConfigurations
+                if (configs.isNotEmpty()) {
+                    val hasAudiblePlayer = configs.any { config ->
+                        val desc = config.toString()
+                        !desc.contains("mutedState:clientVolume") && !desc.contains("mutedState:volume")
+                    }
+                    if (!hasAudiblePlayer) return false
+                }
+            } catch (_: Exception) {}
+        }
+        return true
+    }
+
+    /**
+     * Determines whether an inspected node is merely a search result / feed recommendation thumbnail card.
+     * Prevents false triggers while browsing video feeds without watching.
+     */
+    fun isFeedThumbnailCard(node: AccessibilityNodeInfo, text: String): Boolean {
+        val desc = node.contentDescription?.toString() ?: ""
+        if (desc.contains(" - play video") || desc.endsWith("play video")) {
+            return true
+        }
+        if (desc.contains("views -") || desc.contains("views •")) {
+            return true
+        }
+        return false
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
@@ -156,7 +245,9 @@ class FitnaAccessibilityService : AccessibilityService() {
         visualDetector = VisualDetector(this)
         musicDetector = MusicDetector(this) { audioResult ->
             val currentPkg = rootInActiveWindow?.packageName
-            if (isWhitelistedPackage(currentPkg)) {
+            // Only clear music if user is inside a Quran/Islamic study app!
+            // If user is on the home screen or another app while music is playing, keep isMusicDetected!
+            if (isWhitelistedQuranOrPrayerApp(currentPkg)) {
                 isMusicDetected = false
             } else {
                 isMusicDetected = audioResult.isMusicDetected
@@ -174,9 +265,26 @@ class FitnaAccessibilityService : AccessibilityService() {
         if (event == null) return
 
         val pkg = event.packageName ?: rootInActiveWindow?.packageName
-        if (isWhitelistedPackage(pkg)) {
-            // Immediate full unblock when in Settings, Home, or system utility
-            isKeywordProhibited = false
+        val isBackgroundMusicPlaying = audioManager.isMusicActive && (isMusicDetected || isMusicKeywordProhibited)
+
+        // Pure Quran/Islamic apps always clear shield
+        if (isWhitelistedQuranOrPrayerApp(pkg)) {
+            isVisualKeywordProhibited = false
+            isMusicKeywordProhibited = false
+            isVisualProhibited = false
+            isMusicDetected = false
+            isContentExplicitlyAllowed = false
+            mainHandler.post {
+                overlay.hide()
+                evaluateShieldTrigger()
+            }
+            return
+        }
+
+        // Home screen launcher or Settings clears shield ONLY if no music is actively playing in the background
+        if (isLauncherOrSystemUI(pkg) && !isBackgroundMusicPlaying) {
+            isVisualKeywordProhibited = false
+            isMusicKeywordProhibited = false
             isVisualProhibited = false
             isContentExplicitlyAllowed = false
             mainHandler.post {
@@ -184,6 +292,14 @@ class FitnaAccessibilityService : AccessibilityService() {
                 evaluateShieldTrigger()
             }
             return
+        }
+
+        // Fast reaction when opening an audio player app while audio is active
+        if (isAudioPlayerPackage(pkg) && audioManager.isMusicActive) {
+            if (!isMusicDetected) {
+                isMusicDetected = true
+                mainHandler.post { evaluateShieldTrigger() }
+            }
         }
 
         // When user scrolls, clicks, or window content changes:
@@ -206,21 +322,48 @@ class FitnaAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Only inspect video/clip titles in media, social, and browser apps
-        if (isMediaOrBrowserPackage(pkg)) {
-            try {
-                inspectNodeHierarchy(rootInActiveWindow)
-            } catch (_: Exception) {}
-        }
+        // Inspect all candidate windows (including Picture-in-Picture)
+        try {
+            inspectAllActiveRoots()
+        } catch (_: Exception) {}
     }
 
-    private fun inspectNodeHierarchy(root: AccessibilityNodeInfo?) {
-        if (root == null) return
+    private fun getCandidateRoots(): List<AccessibilityNodeInfo> {
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        val activeRoot = rootInActiveWindow
+        if (activeRoot != null) {
+            candidates.add(activeRoot)
+        }
 
-        val pkg = root.packageName
-        if (isWhitelistedPackage(pkg)) {
-            if (isKeywordProhibited || isContentExplicitlyAllowed) {
-                isKeywordProhibited = false
+        try {
+            val allWindows = windows
+            if (!allWindows.isNullOrEmpty()) {
+                for (w in allWindows) {
+                    val root = w.root ?: continue
+                    val pkg = root.packageName?.toString()?.lowercase() ?: ""
+                    val isPiP = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && w.isInPictureInPictureMode
+                    val isMedia = isMediaOrBrowserPackage(pkg)
+                    if ((isPiP || isMedia) && candidates.none { it.packageName == root.packageName }) {
+                        candidates.add(root)
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        return candidates
+    }
+
+    private fun inspectAllActiveRoots() {
+        val roots = getCandidateRoots()
+        if (roots.isEmpty()) return
+
+        val hasMediaCandidate = roots.any { isMediaOrBrowserPackage(it.packageName) }
+        val isOnlyWhitelisted = roots.all { isWhitelistedPackage(it.packageName) }
+
+        if (isOnlyWhitelisted && !hasMediaCandidate) {
+            if (isVisualKeywordProhibited || isMusicKeywordProhibited || isContentExplicitlyAllowed) {
+                isVisualKeywordProhibited = false
+                isMusicKeywordProhibited = false
                 isContentExplicitlyAllowed = false
                 mainHandler.post { evaluateShieldTrigger() }
             }
@@ -228,53 +371,77 @@ class FitnaAccessibilityService : AccessibilityService() {
         }
 
         var foundAllowedTitle = false
-        var foundProhibitedTitle = false
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
+        var foundProhibitedMusic = false
+        var foundProhibitedVisual = false
 
-        var inspected = 0
-        while (queue.isNotEmpty() && inspected < 250) {
-            val node = queue.removeFirst()
-            inspected++
+        for (root in roots) {
+            if (isWhitelistedPackage(root.packageName) && hasMediaCandidate) continue
 
-            val text = node.text?.toString() ?: ""
-            val contentDesc = node.contentDescription?.toString() ?: ""
-            val combined = "$text $contentDesc".trim()
+            val queue = ArrayDeque<AccessibilityNodeInfo>()
+            queue.add(root)
+            var inspected = 0
 
-            if (combined.isNotEmpty()) {
-                val match = ContentFilter.evaluateText(
-                    text = combined,
-                    customAllowed = settings.customAllowedKeywords,
-                    customFlagged = settings.customFlaggedKeywords
-                )
-                when (match) {
-                    ContentFilter.MatchResult.ALLOWED -> {
-                        foundAllowedTitle = true
+            while (queue.isNotEmpty() && inspected < 250) {
+                val node = queue.removeFirst()
+                inspected++
+
+                val text = node.text?.toString() ?: ""
+                val contentDesc = node.contentDescription?.toString() ?: ""
+                val combined = "$text $contentDesc".trim()
+
+                if (combined.isNotEmpty()) {
+                    val match = ContentFilter.evaluateText(
+                        text = combined,
+                        customAllowed = settings.customAllowedKeywords,
+                        customFlagged = settings.customFlaggedKeywords
+                    )
+                    when (match) {
+                        ContentFilter.MatchResult.ALLOWED -> {
+                            foundAllowedTitle = true
+                        }
+                        ContentFilter.MatchResult.PROHIBITED_MUSIC -> {
+                            // Music video keywords ONLY flag if audible audio is active AND not a feed thumbnail card!
+                            if (isAudibleAudioActive() && !isFeedThumbnailCard(node, combined)) {
+                                foundProhibitedMusic = true
+                            }
+                        }
+                        ContentFilter.MatchResult.PROHIBITED_VISUAL -> {
+                            foundProhibitedVisual = true
+                        }
+                        ContentFilter.MatchResult.PROHIBITED -> {
+                            // Custom user-flagged keyword
+                            if (isAudibleAudioActive() && !isFeedThumbnailCard(node, combined)) {
+                                foundProhibitedMusic = true
+                            } else if (!isFeedThumbnailCard(node, combined)) {
+                                foundProhibitedVisual = true
+                            }
+                        }
+                        ContentFilter.MatchResult.NEUTRAL -> {}
                     }
-                    ContentFilter.MatchResult.PROHIBITED -> {
-                        foundProhibitedTitle = true
-                    }
-                    ContentFilter.MatchResult.NEUTRAL -> {}
+                }
+
+                if (foundAllowedTitle) break
+
+                for (i in 0 until node.childCount) {
+                    val child = node.getChild(i)
+                    if (child != null) queue.add(child)
                 }
             }
 
-            if (foundAllowedTitle) {
-                // User Allow List or Quran exemption takes precedence
-                break
-            }
-
-            for (i in 0 until node.childCount) {
-                val child = node.getChild(i)
-                if (child != null) queue.add(child)
-            }
+            if (foundAllowedTitle) break
         }
 
         val newAllowed = foundAllowedTitle
-        val newProhibited = !foundAllowedTitle && foundProhibitedTitle
+        val newMusicProhibited = !foundAllowedTitle && foundProhibitedMusic
+        val newVisualProhibited = !foundAllowedTitle && foundProhibitedVisual
 
-        if (newProhibited != isKeywordProhibited || newAllowed != isContentExplicitlyAllowed) {
-            isKeywordProhibited = newProhibited
+        if (newAllowed != isContentExplicitlyAllowed ||
+            newMusicProhibited != isMusicKeywordProhibited ||
+            newVisualProhibited != isVisualKeywordProhibited) {
+
             isContentExplicitlyAllowed = newAllowed
+            isMusicKeywordProhibited = newMusicProhibited
+            isVisualKeywordProhibited = newVisualProhibited
             mainHandler.post { evaluateShieldTrigger() }
         }
     }
@@ -298,12 +465,16 @@ class FitnaAccessibilityService : AccessibilityService() {
         continuousScannerJob = serviceScope.launch {
             while (isActive) {
                 val currentPkg = rootInActiveWindow?.packageName
+                val isAudible = isAudibleAudioActive()
+                val isBackgroundMusicPlaying = isAudible && (isMusicDetected || isMusicKeywordProhibited)
 
-                // If user is in Settings, Home Launcher, or whitelisted app, keep shield off
-                if (isWhitelistedPackage(currentPkg)) {
-                    if (isKeywordProhibited || isVisualProhibited || isContentExplicitlyAllowed || overlay.isShowing()) {
-                        isKeywordProhibited = false
+                // 1. Pure Quran / Islamic study apps always clear shield
+                if (isWhitelistedQuranOrPrayerApp(currentPkg)) {
+                    if (isVisualKeywordProhibited || isMusicKeywordProhibited || isVisualProhibited || isMusicDetected || isContentExplicitlyAllowed || overlay.isShowing()) {
+                        isVisualKeywordProhibited = false
+                        isMusicKeywordProhibited = false
                         isVisualProhibited = false
+                        isMusicDetected = false
                         isContentExplicitlyAllowed = false
                         mainHandler.post { overlay.hide() }
                     }
@@ -311,15 +482,37 @@ class FitnaAccessibilityService : AccessibilityService() {
                     continue
                 }
 
-                // 1. Dedicated music streaming app detection (Spotify, YouTube Music, SoundCloud, etc.)
-                // Does NOT falsely flag general spoken videos / clean news as music
-                val isDedicatedMusicApp = dedicatedMusicPackages.any { currentPkg?.contains(it) == true }
-                if (isDedicatedMusicApp && audioManager.isMusicActive) {
+                // 2. Home Launcher or Settings clears shield ONLY if no music is actively playing in the background
+                if (isLauncherOrSystemUI(currentPkg) && !isBackgroundMusicPlaying) {
+                    if (isVisualKeywordProhibited || isMusicKeywordProhibited || isVisualProhibited || isMusicDetected || isContentExplicitlyAllowed || overlay.isShowing()) {
+                        isVisualKeywordProhibited = false
+                        isMusicKeywordProhibited = false
+                        isVisualProhibited = false
+                        isMusicDetected = false
+                        isContentExplicitlyAllowed = false
+                        mainHandler.post { overlay.hide() }
+                    }
+                    delay(300.milliseconds)
+                    continue
+                }
+
+                // 3. If audio stopped playing or muted, clear music triggers immediately
+                if (!isAudible) {
+                    if (isMusicKeywordProhibited || isMusicDetected) {
+                        isMusicKeywordProhibited = false
+                        isMusicDetected = false
+                        mainHandler.post { evaluateShieldTrigger() }
+                    }
+                }
+
+                // 4. Audio / Music app detection (AOSP Music, Samsung Music, Spotify, YouTube Music, local MP3 players, etc.)
+                val isAudioApp = isAudioPlayerPackage(currentPkg)
+                if (isAudioApp && isAudible) {
                     if (!isMusicDetected) {
                         isMusicDetected = true
                         mainHandler.post { evaluateShieldTrigger() }
                     }
-                } else if (isDedicatedMusicApp && !audioManager.isMusicActive) {
+                } else if (isAudioApp && !isAudible) {
                     if (isMusicDetected) {
                         isMusicDetected = false
                         mainHandler.post { evaluateShieldTrigger() }
@@ -333,12 +526,9 @@ class FitnaAccessibilityService : AccessibilityService() {
                     }
                 }
 
-                // 3. Periodic node check if YouTube or media app is visible
+                // 3. Periodic node check across active windows (including PiP)
                 try {
-                    val root = rootInActiveWindow
-                    if (root != null && isMediaOrBrowserPackage(root.packageName)) {
-                        inspectNodeHierarchy(root)
-                    }
+                    inspectAllActiveRoots()
                 } catch (_: Exception) {}
 
                 delay(100.milliseconds) // Fast 100ms cycle
@@ -399,18 +589,6 @@ class FitnaAccessibilityService : AccessibilityService() {
     }
 
     private fun evaluateShieldTrigger() {
-        val currentPkg = rootInActiveWindow?.packageName
-        if (isWhitelistedPackage(currentPkg)) {
-            overlay.hide()
-            _serviceStatus.value = _serviceStatus.value.copy(
-                isShieldActive = false,
-                isVisualProhibited = false,
-                isMusicDetected = false,
-                activeTriggerReason = ""
-            )
-            return
-        }
-
         // If content is explicitly allowed by User Allow List or Quran/lecture exemption,
         // suppress keyword prohibition and audio music detection immediately!
         if (isContentExplicitlyAllowed) {
@@ -424,10 +602,37 @@ class FitnaAccessibilityService : AccessibilityService() {
             return
         }
 
-        // Visual trigger: AI frame classifier OR prohibited keyword in active video
-        val visualTrigger = settings.isVisualEnabled && (isVisualProhibited || isKeywordProhibited)
-        // Music trigger: Audio stream active with music/video
-        val musicTrigger = settings.isMusicEnabled && isMusicDetected
+        val currentPkg = rootInActiveWindow?.packageName
+        if (isWhitelistedQuranOrPrayerApp(currentPkg)) {
+            overlay.hide()
+            _serviceStatus.value = _serviceStatus.value.copy(
+                isShieldActive = false,
+                isVisualProhibited = false,
+                isMusicDetected = false,
+                activeTriggerReason = ""
+            )
+            return
+        }
+
+        val isAudible = isAudibleAudioActive()
+        val isBackgroundMusicPlaying = isAudible && (isMusicDetected || isMusicKeywordProhibited)
+        if (isLauncherOrSystemUI(currentPkg) && !isBackgroundMusicPlaying) {
+            overlay.hide()
+            _serviceStatus.value = _serviceStatus.value.copy(
+                isShieldActive = false,
+                isVisualProhibited = false,
+                isMusicDetected = false,
+                activeTriggerReason = ""
+            )
+            return
+        }
+
+        // Visual trigger: AI frame classifier OR prohibited visual scene keyword
+        val visualTrigger = settings.isVisualEnabled && (isVisualProhibited || isVisualKeywordProhibited)
+
+        // Music trigger: Audio stream active with music/video OR music video title playing with active audio
+        val musicTrigger = settings.isMusicEnabled && isAudible && (isMusicDetected || isMusicKeywordProhibited)
+
         val isCurrentlyProhibited = visualTrigger || musicTrigger
 
         val reason = when {
@@ -456,7 +661,7 @@ class FitnaAccessibilityService : AccessibilityService() {
         settings = newSettings
         musicDetector.updateSettings(newSettings.allowSpeechLectures)
         try {
-            inspectNodeHierarchy(rootInActiveWindow)
+            inspectAllActiveRoots()
         } catch (_: Exception) {}
         evaluateShieldTrigger()
     }
