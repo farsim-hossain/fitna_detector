@@ -316,6 +316,7 @@ class FitnaAccessibilityService : AccessibilityService() {
                 // User is actively scrolling content away!
                 isVisualProhibited = false
                 isIdolVisualProhibited = false
+                visualDetector.resetState()
                 mainHandler.post {
                     overlay.hide()
                     evaluateShieldTrigger()
@@ -500,6 +501,7 @@ class FitnaAccessibilityService : AccessibilityService() {
                         isIdolVisualProhibited = false
                         isMusicDetected = false
                         isContentExplicitlyAllowed = false
+                        visualDetector.resetState()
                         mainHandler.post { overlay.hide() }
                     }
                     delay(300.milliseconds)
@@ -516,6 +518,7 @@ class FitnaAccessibilityService : AccessibilityService() {
                         isIdolVisualProhibited = false
                         isMusicDetected = false
                         isContentExplicitlyAllowed = false
+                        visualDetector.resetState()
                         mainHandler.post { overlay.hide() }
                     }
                     delay(300.milliseconds)

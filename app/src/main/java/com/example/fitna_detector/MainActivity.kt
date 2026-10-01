@@ -114,7 +114,7 @@ fun SplashScreen(onEnter: () -> Unit) {
         ) {
             Image(
                 painter = painterResource(id = R.drawable.app_logo),
-                contentDescription = "Fitna Detector Logo",
+                contentDescription = "Wiqayah Logo",
                 modifier = Modifier
                     .size(190.dp)
                     .clip(RoundedCornerShape(32.dp))
@@ -123,7 +123,7 @@ fun SplashScreen(onEnter: () -> Unit) {
             Spacer(modifier = Modifier.height(28.dp))
 
             Text(
-                text = "Fitna Detector",
+                text = "Wiqayah",
                 fontSize = 32.sp,
                 fontWeight = FontWeight.Bold,
                 color = Color(0xFFE0C475), // Gold emblem tone
@@ -242,7 +242,7 @@ fun FitnaDetectorDashboard(onShowSplash: () -> Unit = {}) {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
         context.startActivity(intent)
-        Toast.makeText(context, "Find 'Fitna Detector' and toggle it ON", Toast.LENGTH_LONG).show()
+        Toast.makeText(context, "Find 'Wiqayah' and toggle it ON", Toast.LENGTH_LONG).show()
     }
 
     fun updateSettings(newSettings: DetectionSettings) {
@@ -290,7 +290,7 @@ fun FitnaDetectorDashboard(onShowSplash: () -> Unit = {}) {
                         )
                         Column {
                             Text(
-                                text = "Fitna Detector",
+                                text = "Wiqayah",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 18.sp
                             )
@@ -356,7 +356,7 @@ fun FitnaDetectorDashboard(onShowSplash: () -> Unit = {}) {
                         }
                         ContextCompat.startForegroundService(context, serviceIntent)
                     } else {
-                        Toast.makeText(context, "Enable Fitna Detector in Accessibility to test", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "Enable Wiqayah in Accessibility to test", Toast.LENGTH_LONG).show()
                         openAccessibilitySettings()
                     }
                 }
@@ -432,7 +432,7 @@ fun SinglePermissionCard(
                 ) {
                     Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(text = "Enable Fitna Detector (1-Tap Grant)", fontWeight = FontWeight.Bold)
+                    Text(text = "Enable Wiqayah (1-Tap Grant)", fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -523,7 +523,7 @@ fun LiveMonitorCard(shieldStatus: ShieldStatus) {
                                 tint = Color.White
                             )
                             Text(
-                                text = "Fitna ! change the content.",
+                                text = "Pause & Reflect: Change the content.",
                                 color = Color.White,
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold
@@ -753,7 +753,7 @@ fun TestSimulationCard(
                 fontSize = 16.sp
             )
             Text(
-                text = "Previews the red screen with 'Fitna ! change the content. Watch something that Islam approves'. The shield stays red while prohibited content/music is active and clears once stopped.",
+                text = "Previews the red screen with 'Pause & Reflect: change the content. Watch something that Islam approves'. The shield stays red while prohibited content/music is active and clears once stopped.",
                 fontSize = 13.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

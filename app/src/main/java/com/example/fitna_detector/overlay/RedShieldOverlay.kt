@@ -131,10 +131,10 @@ class RedShieldOverlay(
             marginEnd = 48
         }
 
-        // Exact requested Title: "Fitna !"
+        // Requested Title: "Pause & Reflect"
         val titleView = TextView(context).apply {
-            text = "Fitna !"
-            textSize = 30f
+            text = "Pause & Reflect"
+            textSize = 28f
             setTextColor(Color.WHITE)
             setTypeface(typeface, Typeface.BOLD)
             gravity = Gravity.CENTER

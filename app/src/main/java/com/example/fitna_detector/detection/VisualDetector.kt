@@ -68,6 +68,13 @@ class VisualDetector(private val context: Context) {
     // Hysteresis counters to prevent overlay flickering
     private var consecutiveSafeFrames = 0
     private var isCurrentlyFlagged = false
+    private var isIdolCurrentlyFlagged = false
+
+    fun resetState() {
+        isCurrentlyFlagged = false
+        isIdolCurrentlyFlagged = false
+        consecutiveSafeFrames = 0
+    }
 
     init {
         loadModel()
@@ -109,14 +116,17 @@ class VisualDetector(private val context: Context) {
             scaled
         }
 
-        // 1. Check if the frame is dominated by our own red shield overlay
+        // 1. Check if the frame is dominated by our own red shield overlay.
+        // Maintain active detection state so the shield remains visible until the user leaves or swipes away.
         val isOverlay = isShieldOverlayPresent(scaledBitmap)
         if (isOverlay) {
             return VisualDetectionResult(
-                isProhibited = false,
-                prohibitedScore = 0f,
+                isProhibited = isCurrentlyFlagged,
+                prohibitedScore = if (isCurrentlyFlagged) 1f else 0f,
                 dominantCategory = "shield_overlay",
-                probabilities = mapOf("neutral" to 1.0f)
+                probabilities = mapOf("shield_overlay" to 1.0f),
+                isIdolDetected = isIdolCurrentlyFlagged,
+                idolCategory = if (isIdolCurrentlyFlagged) "Idol / Sculpture" else ""
             )
         }
 
@@ -204,13 +214,19 @@ class VisualDetector(private val context: Context) {
             }
         }
 
+        if (idolResult.isIdolDetected) {
+            isIdolCurrentlyFlagged = true
+        } else if (!isFrameProhibited && consecutiveSafeFrames >= 2) {
+            isIdolCurrentlyFlagged = false
+        }
+
         return VisualDetectionResult(
             isProhibited = isCurrentlyFlagged,
             prohibitedScore = prohibitedScore,
             dominantCategory = dominantCategory,
             probabilities = probabilities,
-            isIdolDetected = idolResult.isIdolDetected,
-            idolCategory = idolResult.category,
+            isIdolDetected = isIdolCurrentlyFlagged || idolResult.isIdolDetected,
+            idolCategory = idolResult.category.ifEmpty { if (isIdolCurrentlyFlagged) "Idol / Sculpture" else "" },
             idolConfidence = idolResult.confidence
         )
     }

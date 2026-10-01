@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">Fitna Detector</string>
-    <string name="accessibility_service_description">Fitna Detector monitors screen content and audio in real-time, displaying a 30-second red shield when prohibited visual content or music is detected.</string>
+    <string name="app_name">Wiqayah</string>
+    <string name="accessibility_service_description">Wiqayah monitors screen content and audio in real-time, displaying a red shield when prohibited visual content or music is detected.</string>
 </resources>
