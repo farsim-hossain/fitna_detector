@@ -213,11 +213,13 @@ fun FitnaDetectorDashboard(onShowSplash: () -> Unit = {}) {
         val allowSpeech = prefs.getBoolean("allow_speech", false)
         val visualEnabled = prefs.getBoolean("visual_enabled", true)
         val musicEnabled = prefs.getBoolean("music_enabled", true)
+        val idolEnabled = prefs.getBoolean("is_idol_enabled", true)
         val opacity = prefs.getFloat("opacity", 0.93f)
         mutableStateOf(
             DetectionSettings(
                 isVisualEnabled = visualEnabled,
                 isMusicEnabled = musicEnabled,
+                isIdolEnabled = idolEnabled,
                 sensitivity = sensitivity,
                 allowSpeechLectures = allowSpeech,
                 overlayOpacity = opacity,
@@ -252,6 +254,7 @@ fun FitnaDetectorDashboard(onShowSplash: () -> Unit = {}) {
             .putBoolean("allow_speech", newSettings.allowSpeechLectures)
             .putBoolean("visual_enabled", newSettings.isVisualEnabled)
             .putBoolean("music_enabled", newSettings.isMusicEnabled)
+            .putBoolean("is_idol_enabled", newSettings.isIdolEnabled)
             .putFloat("opacity", newSettings.overlayOpacity)
             .apply()
 
@@ -470,22 +473,31 @@ fun LiveMonitorCard(shieldStatus: ShieldStatus) {
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 // Visual Indicator
                 StatusBadge(
                     modifier = Modifier.weight(1f),
-                    title = "Visual State",
-                    status = if (shieldStatus.isVisualProhibited) "Fitna Detected!" else "Clean / Safe",
+                    title = "Visual",
+                    status = if (shieldStatus.isVisualProhibited) "Fitna!" else "Clean",
                     isWarning = shieldStatus.isVisualProhibited,
                     icon = Icons.Default.Visibility
+                )
+
+                // Idol / Statue Indicator
+                StatusBadge(
+                    modifier = Modifier.weight(1f),
+                    title = "Idol/Statue",
+                    status = if (shieldStatus.isIdolDetected) "Idol!" else "Clean",
+                    isWarning = shieldStatus.isIdolDetected,
+                    icon = Icons.Default.AccountBalance
                 )
 
                 // Audio Indicator
                 StatusBadge(
                     modifier = Modifier.weight(1f),
-                    title = "Audio State",
-                    status = if (shieldStatus.isMusicDetected) "Music Detected!" else "Quiet / Speech",
+                    title = "Audio",
+                    status = if (shieldStatus.isMusicDetected) "Music!" else "Speech",
                     isWarning = shieldStatus.isMusicDetected,
                     icon = Icons.Default.MusicNote
                 )
@@ -613,6 +625,26 @@ fun SettingsCard(
                 Switch(
                     checked = settings.isVisualEnabled,
                     onCheckedChange = { onSettingsChanged(settings.copy(isVisualEnabled = it)) }
+                )
+            }
+
+            // Idol & Statue Shield Toggle
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "Idol & Statue Shield", fontWeight = FontWeight.Medium)
+                    Text(
+                        text = "Flags statues, idols, worship rituals & religious sculptures",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = settings.isIdolEnabled,
+                    onCheckedChange = { onSettingsChanged(settings.copy(isIdolEnabled = it)) }
                 )
             }
 

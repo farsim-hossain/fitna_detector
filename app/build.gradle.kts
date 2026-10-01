@@ -51,6 +51,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.service)
     implementation(libs.onnxruntime.android)
     implementation("org.tensorflow:tensorflow-lite:2.16.1")
+    implementation("com.google.mlkit:image-labeling:17.0.9")
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

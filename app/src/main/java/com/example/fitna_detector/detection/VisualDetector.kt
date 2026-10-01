@@ -8,19 +8,26 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import com.example.fitna_detector.model.SensitivityLevel
 import com.example.fitna_detector.model.VisualDetectionResult
+import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.label.ImageLabeler
+import com.google.mlkit.vision.label.ImageLabeling
+import com.google.mlkit.vision.label.defaults.ImageLabelerOptions
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.util.Locale
 import kotlin.math.exp
 
 /**
  * On-device AI classifier for detecting Islamically prohibited visual content:
  * - Explicit nudity / adult content (porn / hentai)
  * - Suggestive, provocative attire, swimwear, lingerie, and romantic/intimate couple scenes (sexy)
+ * - Statues, deity idols, and sculptures from other religions
  *
  * Uses MobileNetV4 NSFW Classifier via ONNX Runtime Mobile, augmented with an intimacy
- * skin-exposure heuristic for catching romantic YouTube couple scenes and music videos.
+ * skin-exposure heuristic and Google ML Kit Image Labeler for idol/statue detection.
  */
 class VisualDetector(private val context: Context) {
 
@@ -28,6 +35,22 @@ class VisualDetector(private val context: Context) {
     private var ortSession: OrtSession? = null
 
     private val classLabels = arrayOf("drawings", "hentai", "neutral", "porn", "sexy")
+
+    private val idolLabels = setOf(
+        "statue", "sculpture", "altar", "shrine", "temple",
+        "hindu temple", "place of worship", "monument", "totem", "crucifix"
+    )
+
+    private val imageLabeler: ImageLabeler? by lazy {
+        try {
+            val options = ImageLabelerOptions.Builder()
+                .setConfidenceThreshold(0.40f)
+                .build()
+            ImageLabeling.getClient(options)
+        } catch (_: Throwable) {
+            null
+        }
+    }
 
     // Preallocated buffers for high-speed zero-GC inference
     private val targetSize = 224
@@ -96,7 +119,10 @@ class VisualDetector(private val context: Context) {
         // 2. Calculate Intimacy & Skin Exposure Heuristic (RGB + YCbCr)
         val skinRatio = computeSkinRatio(scaledBitmap)
 
-        // 3. Run ONNX Model Inference if loaded
+        // 3. Detect Statues, Shrines, and Sculptures via ML Kit Image Labeler
+        val idolResult = checkIdolPresence(scaledBitmap)
+
+        // 4. Run ONNX Model Inference if loaded
         val session = ortSession
         val probabilities: Map<String, Float>
         val prohibitedScore: Float
@@ -144,7 +170,7 @@ class VisualDetector(private val context: Context) {
                 results.close()
             } catch (e: Exception) {
                 e.printStackTrace()
-                return fallbackHeuristicResult(skinRatio, sensitivity)
+                return fallbackHeuristicResult(skinRatio, sensitivity, idolResult)
             } finally {
                 inputTensor.close()
                 if (scaledBitmap != bitmap) {
@@ -156,7 +182,7 @@ class VisualDetector(private val context: Context) {
             if (scaledBitmap != bitmap) {
                 scaledBitmap.recycle()
             }
-            return fallbackHeuristicResult(skinRatio, sensitivity)
+            return fallbackHeuristicResult(skinRatio, sensitivity, idolResult)
         }
 
         // Apply hysteresis debouncing
@@ -178,7 +204,10 @@ class VisualDetector(private val context: Context) {
             isProhibited = isCurrentlyFlagged,
             prohibitedScore = prohibitedScore,
             dominantCategory = dominantCategory,
-            probabilities = probabilities
+            probabilities = probabilities,
+            isIdolDetected = idolResult.isIdolDetected,
+            idolCategory = idolResult.category,
+            idolConfidence = idolResult.confidence
         )
     }
 
@@ -310,14 +339,48 @@ class VisualDetector(private val context: Context) {
         return if (sampled > 0) skinPixelCount.toFloat() / sampled else 0f
     }
 
-    private fun fallbackHeuristicResult(skinRatio: Float, sensitivity: SensitivityLevel): VisualDetectionResult {
+    data class IdolCheckResult(
+        val isIdolDetected: Boolean = false,
+        val category: String = "",
+        val confidence: Float = 0f
+    )
+
+    private fun checkIdolPresence(bitmap: Bitmap): IdolCheckResult {
+        val labeler = imageLabeler ?: return IdolCheckResult()
+        return try {
+            val inputImage = InputImage.fromBitmap(bitmap, 0)
+            val labels = Tasks.await(labeler.process(inputImage))
+            for (label in labels) {
+                val text = label.text.lowercase(Locale.ROOT)
+                if (idolLabels.any { text.contains(it) }) {
+                    return IdolCheckResult(
+                        isIdolDetected = true,
+                        category = label.text,
+                        confidence = label.confidence
+                    )
+                }
+            }
+            IdolCheckResult()
+        } catch (_: Throwable) {
+            IdolCheckResult()
+        }
+    }
+
+    private fun fallbackHeuristicResult(
+        skinRatio: Float,
+        sensitivity: SensitivityLevel,
+        idolResult: IdolCheckResult = IdolCheckResult()
+    ): VisualDetectionResult {
         val threshold = if (sensitivity == SensitivityLevel.STRICT) 0.35f else 0.45f
         val isFlagged = skinRatio >= threshold
         return VisualDetectionResult(
             isProhibited = isFlagged,
             prohibitedScore = skinRatio,
             dominantCategory = if (isFlagged) "suggestive_heuristic" else "neutral",
-            probabilities = mapOf("skin_ratio" to skinRatio)
+            probabilities = mapOf("skin_ratio" to skinRatio),
+            isIdolDetected = idolResult.isIdolDetected,
+            idolCategory = idolResult.category,
+            idolConfidence = idolResult.confidence
         )
     }
 
@@ -325,6 +388,9 @@ class VisualDetector(private val context: Context) {
         try {
             ortSession?.close()
             ortSession = null
+        } catch (_: Exception) {}
+        try {
+            imageLabeler?.close()
         } catch (_: Exception) {}
     }
 }

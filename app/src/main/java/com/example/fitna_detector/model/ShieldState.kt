@@ -8,6 +8,9 @@ data class VisualDetectionResult(
     val prohibitedScore: Float = 0f,
     val dominantCategory: String = "neutral",
     val probabilities: Map<String, Float> = emptyMap(),
+    val isIdolDetected: Boolean = false,
+    val idolCategory: String = "",
+    val idolConfidence: Float = 0f,
     val timestampMs: Long = System.currentTimeMillis()
 )
 
@@ -30,6 +33,7 @@ data class ShieldStatus(
     val isShieldActive: Boolean = false,
     val isVisualProhibited: Boolean = false,
     val isMusicDetected: Boolean = false,
+    val isIdolDetected: Boolean = false,
     val activeTriggerReason: String = "",
     val fps: Float = 0f
 )
@@ -46,6 +50,7 @@ enum class SensitivityLevel(val displayName: String, val threshold: Float) {
 data class DetectionSettings(
     val isVisualEnabled: Boolean = true,
     val isMusicEnabled: Boolean = true,
+    val isIdolEnabled: Boolean = true,
     val sensitivity: SensitivityLevel = SensitivityLevel.BALANCED,
     val allowSpeechLectures: Boolean = false, // Immediate detection for music & videos by default
     val overlayOpacity: Float = 0.93f,

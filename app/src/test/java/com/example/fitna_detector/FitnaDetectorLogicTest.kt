@@ -651,5 +651,156 @@ class FitnaDetectorLogicTest {
             shouldDismissShieldOnLauncher(isLauncher = true, isAudible = true, isMusicDetected = false, isMusicKeywordProhibited = true)
         )
     }
+
+    @Test
+    fun testIdolKeywordsEnglish() {
+        val testCases = listOf(
+            "Grand Durga idol unveiling ceremony",
+            "Lord Shiva 4k statue in Himalayas",
+            "Ancient Buddha sculpture discovered",
+            "Ganesha idol immersion celebration",
+            "Temple deity murti darshan live",
+            "Morning temple aarti ritual with flowers",
+            "Historic church crucifix statue in Rome",
+            "Pagan ritual around sacred idol",
+            "Krishna murti decoration for Janmashtami",
+            "Sculpture from other religions exhibition"
+        )
+
+        for (title in testCases) {
+            val result = ContentFilter.evaluateText(title)
+            assertEquals("Expected PROHIBITED_IDOL for: '$title'", ContentFilter.MatchResult.PROHIBITED_IDOL, result)
+        }
+    }
+
+    @Test
+    fun testIdolKeywordsBengali() {
+        val testCases = listOf(
+            "ঐতিহাসিক দুর্গা প্রতিমা ও পূজা মণ্ডপ",
+            "শিব মূর্তি তৈরি করার পদ্ধতি",
+            "কালী প্রতিমা বিসর্জন লাইভ",
+            "মন্দিরে মহা আরতি ও পূজা",
+            "ঠাকুরের মূর্তি দর্শন ও প্রণাম",
+            "গণেশ মূর্তি ভাস্কর্য প্রদর্শনী"
+        )
+
+        for (title in testCases) {
+            val result = ContentFilter.evaluateText(title)
+            assertEquals("Expected PROHIBITED_IDOL for Bengali: '$title'", ContentFilter.MatchResult.PROHIBITED_IDOL, result)
+        }
+    }
+
+    @Test
+    fun testIdolKeywordsHindi() {
+        val testCases = listOf(
+            "गणेश जी की भव्य मूर्ति विसर्जन",
+            "शिव प्रतिमा का भव्य दर्शन",
+            "मंदिर में सुबह की आरती",
+            "दुर्गा पूजा महोत्सव लाइव",
+            "देवता प्रतिमा की प्राण प्रतिष्ठा",
+            "भगवान की मूर्ति की पूजा अर्चना"
+        )
+
+        for (title in testCases) {
+            val result = ContentFilter.evaluateText(title)
+            assertEquals("Expected PROHIBITED_IDOL for Hindi: '$title'", ContentFilter.MatchResult.PROHIBITED_IDOL, result)
+        }
+    }
+
+    @Test
+    fun testIdolKeywordsArabicAndUrdu() {
+        val arabicCases = listOf(
+            "أكبر تمثال لصنم بوذا في آسيا",
+            "عبادة الأصنام في العصور القديمة",
+            "طواف بالصنم ونصب تذكاري وثني"
+        )
+        for (title in arabicCases) {
+            val result = ContentFilter.evaluateText(title)
+            assertEquals("Expected PROHIBITED_IDOL for Arabic: '$title'", ContentFilter.MatchResult.PROHIBITED_IDOL, result)
+        }
+
+        val urduCases = listOf(
+            "مورتی پوجا کے رسم و رواج",
+            "بت پرستی کی تاریخی حقیقت",
+            "بت کدہ اور مندر میں مورتیاں"
+        )
+        for (title in urduCases) {
+            val result = ContentFilter.evaluateText(title)
+            assertEquals("Expected PROHIBITED_IDOL for Urdu: '$title'", ContentFilter.MatchResult.PROHIBITED_IDOL, result)
+        }
+    }
+
+    @Test
+    fun testSafeIslamicLectureExemptionsOnIdolTopics() {
+        val educationalCases = listOf(
+            "Surah Al-Anbiya Tafsir - Prophet Ibrahim breaks the idols",
+            "Dr. Zakir Naik debate on idol worship and shirk in Islam",
+            "Islamic lecture on Tawheed vs idol worship by Nouman Ali Khan",
+            "Story of Hazrat Ibrahim destroying idols in the temple - Bayan",
+            "Refutation of polytheism and idol worship - Islamic speech",
+            "Surah Al-Baqarah recitation by Mishary Alafasy"
+        )
+
+        for (title in educationalCases) {
+            val result = ContentFilter.evaluateText(title)
+            assertEquals("Islamic educational lectures discussing idols MUST be ALLOWED: '$title'", ContentFilter.MatchResult.ALLOWED, result)
+        }
+    }
+
+    @Test
+    fun testIdolShieldDecisionController() {
+        fun evaluateShield(
+            isIdolEnabled: Boolean,
+            isIdolVisualProhibited: Boolean,
+            isIdolKeywordProhibited: Boolean,
+            isContentExplicitlyAllowed: Boolean
+        ): Pair<Boolean, String> {
+            if (isContentExplicitlyAllowed) {
+                return Pair(false, "Allowed Content Exemption")
+            }
+            val idolTrigger = isIdolEnabled && (isIdolVisualProhibited || isIdolKeywordProhibited)
+            val reason = if (idolTrigger) "Idol / Religious sculpture detected" else ""
+            return Pair(idolTrigger, reason)
+        }
+
+        // Case 1: Idol keyword detected with shield enabled -> shield triggers
+        val (active1, reason1) = evaluateShield(
+            isIdolEnabled = true,
+            isIdolVisualProhibited = false,
+            isIdolKeywordProhibited = true,
+            isContentExplicitlyAllowed = false
+        )
+        assertTrue(active1)
+        assertEquals("Idol / Religious sculpture detected", reason1)
+
+        // Case 2: Visual idol detected with shield enabled -> shield triggers
+        val (active2, reason2) = evaluateShield(
+            isIdolEnabled = true,
+            isIdolVisualProhibited = true,
+            isIdolKeywordProhibited = false,
+            isContentExplicitlyAllowed = false
+        )
+        assertTrue(active2)
+        assertEquals("Idol / Religious sculpture detected", reason2)
+
+        // Case 3: Idol detected but user toggled Idol Shield OFF -> allowed
+        val (active3, _) = evaluateShield(
+            isIdolEnabled = false,
+            isIdolVisualProhibited = true,
+            isIdolKeywordProhibited = true,
+            isContentExplicitlyAllowed = false
+        )
+        assertFalse("Disabled idol shield must NOT trigger", active3)
+
+        // Case 4: Islamic lecture discussing idols -> explicitly allowed, shield suppressed
+        val (active4, reason4) = evaluateShield(
+            isIdolEnabled = true,
+            isIdolVisualProhibited = false,
+            isIdolKeywordProhibited = true,
+            isContentExplicitlyAllowed = true
+        )
+        assertFalse("Islamic lecture discussing idols must be exempted", active4)
+        assertEquals("Allowed Content Exemption", reason4)
+    }
 }
 

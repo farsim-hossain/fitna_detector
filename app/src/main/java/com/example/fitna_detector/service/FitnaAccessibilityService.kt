@@ -65,6 +65,8 @@ class FitnaAccessibilityService : AccessibilityService() {
     private var isMusicDetected = false
     private var isVisualKeywordProhibited = false
     private var isMusicKeywordProhibited = false
+    private var isIdolVisualProhibited = false
+    private var isIdolKeywordProhibited = false
     private var isContentExplicitlyAllowed = false
     private val isScreenshotPending = AtomicBoolean(false)
     private var continuousScannerJob: Job? = null
@@ -235,9 +237,11 @@ class FitnaAccessibilityService : AccessibilityService() {
         val prefs = getSharedPreferences("fitna_detector_prefs", Context.MODE_PRIVATE)
         val savedAllowed = prefs.getStringSet("custom_allowed_keywords", emptySet()) ?: emptySet()
         val savedFlagged = prefs.getStringSet("custom_flagged_keywords", emptySet()) ?: emptySet()
+        val savedIdol = prefs.getBoolean("is_idol_enabled", true)
         settings = settings.copy(
             customAllowedKeywords = savedAllowed,
-            customFlaggedKeywords = savedFlagged
+            customFlaggedKeywords = savedFlagged,
+            isIdolEnabled = savedIdol
         )
 
         audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
@@ -271,7 +275,9 @@ class FitnaAccessibilityService : AccessibilityService() {
         if (isWhitelistedQuranOrPrayerApp(pkg)) {
             isVisualKeywordProhibited = false
             isMusicKeywordProhibited = false
+            isIdolKeywordProhibited = false
             isVisualProhibited = false
+            isIdolVisualProhibited = false
             isMusicDetected = false
             isContentExplicitlyAllowed = false
             mainHandler.post {
@@ -285,7 +291,9 @@ class FitnaAccessibilityService : AccessibilityService() {
         if (isLauncherOrSystemUI(pkg) && !isBackgroundMusicPlaying) {
             isVisualKeywordProhibited = false
             isMusicKeywordProhibited = false
+            isIdolKeywordProhibited = false
             isVisualProhibited = false
+            isIdolVisualProhibited = false
             isContentExplicitlyAllowed = false
             mainHandler.post {
                 overlay.hide()
@@ -310,11 +318,12 @@ class FitnaAccessibilityService : AccessibilityService() {
             if (overlay.isShowing()) {
                 // User is actively scrolling or swapping content away!
                 isVisualProhibited = false
+                isIdolVisualProhibited = false
                 mainHandler.post {
                     overlay.hide()
                     evaluateShieldTrigger()
                 }
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && settings.isVisualEnabled) {
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && (settings.isVisualEnabled || settings.isIdolEnabled)) {
                 // Instantly trigger capture on scroll/change without waiting for periodic timer!
                 if (!isScreenshotPending.get()) {
                     captureAndAnalyzeScreenshot()
@@ -361,9 +370,10 @@ class FitnaAccessibilityService : AccessibilityService() {
         val isOnlyWhitelisted = roots.all { isWhitelistedPackage(it.packageName) }
 
         if (isOnlyWhitelisted && !hasMediaCandidate) {
-            if (isVisualKeywordProhibited || isMusicKeywordProhibited || isContentExplicitlyAllowed) {
+            if (isVisualKeywordProhibited || isMusicKeywordProhibited || isIdolKeywordProhibited || isContentExplicitlyAllowed) {
                 isVisualKeywordProhibited = false
                 isMusicKeywordProhibited = false
+                isIdolKeywordProhibited = false
                 isContentExplicitlyAllowed = false
                 mainHandler.post { evaluateShieldTrigger() }
             }
@@ -373,6 +383,7 @@ class FitnaAccessibilityService : AccessibilityService() {
         var foundAllowedTitle = false
         var foundProhibitedMusic = false
         var foundProhibitedVisual = false
+        var foundProhibitedIdol = false
 
         for (root in roots) {
             if (isWhitelistedPackage(root.packageName) && hasMediaCandidate) continue
@@ -408,6 +419,11 @@ class FitnaAccessibilityService : AccessibilityService() {
                         ContentFilter.MatchResult.PROHIBITED_VISUAL -> {
                             foundProhibitedVisual = true
                         }
+                        ContentFilter.MatchResult.PROHIBITED_IDOL -> {
+                            if (!isFeedThumbnailCard(node, combined)) {
+                                foundProhibitedIdol = true
+                            }
+                        }
                         ContentFilter.MatchResult.PROHIBITED -> {
                             // Custom user-flagged keyword
                             if (isAudibleAudioActive() && !isFeedThumbnailCard(node, combined)) {
@@ -434,14 +450,17 @@ class FitnaAccessibilityService : AccessibilityService() {
         val newAllowed = foundAllowedTitle
         val newMusicProhibited = !foundAllowedTitle && foundProhibitedMusic
         val newVisualProhibited = !foundAllowedTitle && foundProhibitedVisual
+        val newIdolProhibited = !foundAllowedTitle && foundProhibitedIdol
 
         if (newAllowed != isContentExplicitlyAllowed ||
             newMusicProhibited != isMusicKeywordProhibited ||
-            newVisualProhibited != isVisualKeywordProhibited) {
+            newVisualProhibited != isVisualKeywordProhibited ||
+            newIdolProhibited != isIdolKeywordProhibited) {
 
             isContentExplicitlyAllowed = newAllowed
             isMusicKeywordProhibited = newMusicProhibited
             isVisualKeywordProhibited = newVisualProhibited
+            isIdolKeywordProhibited = newIdolProhibited
             mainHandler.post { evaluateShieldTrigger() }
         }
     }
@@ -470,10 +489,12 @@ class FitnaAccessibilityService : AccessibilityService() {
 
                 // 1. Pure Quran / Islamic study apps always clear shield
                 if (isWhitelistedQuranOrPrayerApp(currentPkg)) {
-                    if (isVisualKeywordProhibited || isMusicKeywordProhibited || isVisualProhibited || isMusicDetected || isContentExplicitlyAllowed || overlay.isShowing()) {
+                    if (isVisualKeywordProhibited || isMusicKeywordProhibited || isIdolKeywordProhibited || isVisualProhibited || isIdolVisualProhibited || isMusicDetected || isContentExplicitlyAllowed || overlay.isShowing()) {
                         isVisualKeywordProhibited = false
                         isMusicKeywordProhibited = false
+                        isIdolKeywordProhibited = false
                         isVisualProhibited = false
+                        isIdolVisualProhibited = false
                         isMusicDetected = false
                         isContentExplicitlyAllowed = false
                         mainHandler.post { overlay.hide() }
@@ -484,10 +505,12 @@ class FitnaAccessibilityService : AccessibilityService() {
 
                 // 2. Home Launcher or Settings clears shield ONLY if no music is actively playing in the background
                 if (isLauncherOrSystemUI(currentPkg) && !isBackgroundMusicPlaying) {
-                    if (isVisualKeywordProhibited || isMusicKeywordProhibited || isVisualProhibited || isMusicDetected || isContentExplicitlyAllowed || overlay.isShowing()) {
+                    if (isVisualKeywordProhibited || isMusicKeywordProhibited || isIdolKeywordProhibited || isVisualProhibited || isIdolVisualProhibited || isMusicDetected || isContentExplicitlyAllowed || overlay.isShowing()) {
                         isVisualKeywordProhibited = false
                         isMusicKeywordProhibited = false
+                        isIdolKeywordProhibited = false
                         isVisualProhibited = false
+                        isIdolVisualProhibited = false
                         isMusicDetected = false
                         isContentExplicitlyAllowed = false
                         mainHandler.post { overlay.hide() }
@@ -519,14 +542,14 @@ class FitnaAccessibilityService : AccessibilityService() {
                     }
                 }
 
-                // 2. High-speed visual screenshot analysis (Android 11+)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && settings.isVisualEnabled) {
+                // 5. High-speed visual screenshot analysis (Android 11+)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && (settings.isVisualEnabled || settings.isIdolEnabled)) {
                     if (!isScreenshotPending.get()) {
                         captureAndAnalyzeScreenshot()
                     }
                 }
 
-                // 3. Periodic node check across active windows (including PiP)
+                // 6. Periodic node check across active windows (including PiP)
                 try {
                     inspectAllActiveRoots()
                 } catch (_: Exception) {}
@@ -558,15 +581,19 @@ class FitnaAccessibilityService : AccessibilityService() {
                                     val result = visualDetector.analyzeFrame(softwareBitmap, settings.sensitivity)
                                     softwareBitmap.recycle()
 
-                                    val wasProhibited = isVisualProhibited
-                                    isVisualProhibited = result.isProhibited
+                                    val wasVisualProhibited = isVisualProhibited
+                                    val wasIdolProhibited = isIdolVisualProhibited
 
-                                    if (wasProhibited != isVisualProhibited) {
+                                    isVisualProhibited = result.isProhibited
+                                    isIdolVisualProhibited = result.isIdolDetected
+
+                                    if (wasVisualProhibited != isVisualProhibited || wasIdolProhibited != isIdolVisualProhibited) {
                                         mainHandler.post { evaluateShieldTrigger() }
                                     }
 
                                     _serviceStatus.value = _serviceStatus.value.copy(
-                                        isVisualProhibited = isVisualProhibited
+                                        isVisualProhibited = isVisualProhibited,
+                                        isIdolDetected = isIdolVisualProhibited || isIdolKeywordProhibited
                                     )
                                 }
                             }
@@ -597,6 +624,7 @@ class FitnaAccessibilityService : AccessibilityService() {
                 isShieldActive = false,
                 isVisualProhibited = false,
                 isMusicDetected = false,
+                isIdolDetected = false,
                 activeTriggerReason = "Allowed Content Exemption"
             )
             return
@@ -609,6 +637,7 @@ class FitnaAccessibilityService : AccessibilityService() {
                 isShieldActive = false,
                 isVisualProhibited = false,
                 isMusicDetected = false,
+                isIdolDetected = false,
                 activeTriggerReason = ""
             )
             return
@@ -622,10 +651,14 @@ class FitnaAccessibilityService : AccessibilityService() {
                 isShieldActive = false,
                 isVisualProhibited = false,
                 isMusicDetected = false,
+                isIdolDetected = false,
                 activeTriggerReason = ""
             )
             return
         }
+
+        // Idol trigger: AI frame classifier OR prohibited idol/statue/sculpture keyword
+        val idolTrigger = settings.isIdolEnabled && (isIdolVisualProhibited || isIdolKeywordProhibited)
 
         // Visual trigger: AI frame classifier OR prohibited visual scene keyword
         val visualTrigger = settings.isVisualEnabled && (isVisualProhibited || isVisualKeywordProhibited)
@@ -633,9 +666,11 @@ class FitnaAccessibilityService : AccessibilityService() {
         // Music trigger: Audio stream active with music/video OR music video title playing with active audio
         val musicTrigger = settings.isMusicEnabled && isAudible && (isMusicDetected || isMusicKeywordProhibited)
 
-        val isCurrentlyProhibited = visualTrigger || musicTrigger
+        val isCurrentlyProhibited = idolTrigger || visualTrigger || musicTrigger
 
         val reason = when {
+            idolTrigger && musicTrigger -> "Idol / Religious sculpture & music detected"
+            idolTrigger -> "Idol / Religious sculpture detected"
             visualTrigger && musicTrigger -> "Prohibited visual content & music detected"
             visualTrigger -> "Prohibited visual content detected"
             musicTrigger -> "Music playback detected"
@@ -653,6 +688,7 @@ class FitnaAccessibilityService : AccessibilityService() {
             isShieldActive = isCurrentlyProhibited,
             isVisualProhibited = visualTrigger,
             isMusicDetected = musicTrigger,
+            isIdolDetected = idolTrigger,
             activeTriggerReason = reason
         )
     }
