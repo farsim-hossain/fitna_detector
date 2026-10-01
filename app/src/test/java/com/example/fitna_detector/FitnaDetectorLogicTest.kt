@@ -802,5 +802,40 @@ class FitnaDetectorLogicTest {
         assertFalse("Islamic lecture discussing idols must be exempted", active4)
         assertEquals("Allowed Content Exemption", reason4)
     }
+
+    @Test
+    fun testFalsePositivesNeutralContentMustNotBeFlagged() {
+        val everydayNeutralCases = listOf(
+            "Artificial Intelligence tutorial for beginners",
+            "How to write a scientific article in 2026",
+            "Participating in university programming contest",
+            "Department of Computer Science and Engineering",
+            "How to install Kali Linux on VirtualBox",
+            "Alkaline diet benefits and healthy foods",
+            "Computer RAM upgrade guide 16GB vs 32GB",
+            "The weather is so cold outside I am shivering",
+            "একটু আরাম ও বিশ্রাম নেওয়া দরকার",
+            "খাবারের পরে একটু বিশ্রাম নেওয়া শরীরের জন্য ভালো",
+            "थोड़ा आराम और विश्राम करना चाहिए",
+            "Python programming crash course",
+            "BBC News World Today - International Headlines",
+            "Lex Fridman Podcast with Sam Altman",
+            "How to roast a whole chicken recipe - Cooking tutorial",
+            "Baby laughing compilation cute toddlers playing",
+            "Tom and Jerry classic cartoon episode",
+            "Olympic swimming highlights race finals",
+            "DIY home repair and woodworking guide"
+        )
+
+        val falsePositives = mutableListOf<String>()
+        for (title in everydayNeutralCases) {
+            val result = ContentFilter.evaluateText(title)
+            if (result != ContentFilter.MatchResult.NEUTRAL && result != ContentFilter.MatchResult.ALLOWED) {
+                falsePositives.add("'$title' was falsely flagged as $result")
+            }
+        }
+
+        assertTrue("False positives found: \n${falsePositives.joinToString("\n")}", falsePositives.isEmpty())
+    }
 }
 
