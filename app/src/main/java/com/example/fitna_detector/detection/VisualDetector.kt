@@ -38,13 +38,17 @@ class VisualDetector(private val context: Context) {
 
     private val idolLabels = setOf(
         "statue", "sculpture", "altar", "shrine", "temple",
-        "hindu temple", "place of worship", "monument", "totem", "crucifix"
+        "hindu temple", "place of worship", "holy places", "monument", "totem", "crucifix",
+        "mythology", "mythological figure", "mythological", "carving", "figurine", "deity",
+        "guru", "stone carving", "bronze sculpture", "classical sculpture",
+        "religious item", "artefact", "artifact", "wat", "stupa", "pagoda", "stele",
+        "pedestal", "relief", "gargoyle", "monastery", "buddha", "buddhism", "hinduism"
     )
 
     private val imageLabeler: ImageLabeler? by lazy {
         try {
             val options = ImageLabelerOptions.Builder()
-                .setConfidenceThreshold(0.40f)
+                .setConfidenceThreshold(0.25f)
                 .build()
             ImageLabeling.getClient(options)
         } catch (_: Throwable) {
@@ -119,8 +123,8 @@ class VisualDetector(private val context: Context) {
         // 2. Calculate Intimacy & Skin Exposure Heuristic (RGB + YCbCr)
         val skinRatio = computeSkinRatio(scaledBitmap)
 
-        // 3. Detect Statues, Shrines, and Sculptures via ML Kit Image Labeler
-        val idolResult = checkIdolPresence(scaledBitmap)
+        // 3. Detect Statues, Shrines, and Sculptures via ML Kit Image Labeler across full frame
+        val idolResult = checkIdolPresence(bitmap)
 
         // 4. Run ONNX Model Inference if loaded
         val session = ortSession
@@ -352,7 +356,9 @@ class VisualDetector(private val context: Context) {
             val labels = Tasks.await(labeler.process(inputImage))
             for (label in labels) {
                 val text = label.text.lowercase(Locale.ROOT)
+                android.util.Log.d("FitnaVisual", "Detected MLKit label: '${label.text}' confidence=${label.confidence}")
                 if (idolLabels.any { text.contains(it) }) {
+                    android.util.Log.d("FitnaVisual", "MATCHED IDOL LABEL: '${label.text}' (${label.confidence})")
                     return IdolCheckResult(
                         isIdolDetected = true,
                         category = label.text,
