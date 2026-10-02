@@ -66,11 +66,6 @@ class MainActivity : ComponentActivity() {
             Fitna_detectorTheme {
                 var showSplashScreen by remember { mutableStateOf(true) }
 
-                LaunchedEffect(Unit) {
-                    delay(2600)
-                    showSplashScreen = false
-                }
-
                 if (showSplashScreen) {
                     SplashScreen(onEnter = { showSplashScreen = false })
                 } else {
@@ -143,7 +138,7 @@ fun SplashScreen(onEnter: () -> Unit) {
             Spacer(modifier = Modifier.height(18.dp))
 
             Text(
-                text = "\"Tell the believing men to lower their gaze and guard their modesty; that is purer for them.\" — Surah An-Nur 24:30",
+                text = "\"˹O Prophet!˺ Tell the believing men to lower their gaze and guard their chastity. That is purer for them. Surely Allah is All-Aware of what they do.\" — Surah An-Nur 24:30",
                 fontSize = 13.sp,
                 fontStyle = FontStyle.Italic,
                 color = Color(0xFFB0BEC5),

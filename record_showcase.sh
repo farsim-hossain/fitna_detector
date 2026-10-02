@@ -11,16 +11,15 @@ echo "=== Preparing Pre-Grant State for Recording ==="
 $ADB shell am force-stop com.google.android.youtube || true
 $ADB shell am force-stop com.android.chrome || true
 $ADB shell am force-stop com.google.android.apps.youtube.music || true
+$ADB shell am force-stop com.example.fitna_detector || true
 
 # Set accessibility permission to disabled to show 1-Tap grant flow
 $ADB shell settings put secure enabled_accessibility_services '""' || true
 $ADB shell settings put secure accessibility_enabled 0 || true
 
-# Start Wiqayah and show splash screen
+# Start Wiqayah cold - opens directly into SplashScreen
 $ADB shell am start -n com.example.fitna_detector/.MainActivity
-sleep 1.5
-$ADB shell input tap 980 215 # Bring up splash screen
-sleep 1.5
+sleep 2.0
 
 echo "=== Starting screenrecord on emulator ==="
 $ADB shell rm -f $VIDEO_REMOTE
@@ -28,12 +27,12 @@ $ADB shell screenrecord --time-limit 180 --bit-rate 6000000 $VIDEO_REMOTE &
 RECORD_PID=$!
 sleep 2
 
-echo "=== Scene 1: Beautiful Wiqayah Splash Screen ==="
-sleep 4.0
+echo "=== Scene 1: Beautiful Wiqayah Splash Screen with Quran Verse ==="
+sleep 6.0 # Ample time to read Wiqayah branding and Surah An-Nur 24:30
 
 echo "=== Scene 2: Entering Dashboard in Setup Mode ==="
 $ADB shell input tap 500 1725 # Tap 'Enter Shield Dashboard'
-sleep 3.5 # Shows 'Single-Permission Setup' card and 'Enable Wiqayah (1-Tap Grant)' button
+sleep 4.0 # Shows 'Single-Permission Setup' card and 'Enable Wiqayah (1-Tap Grant)' button
 
 echo "=== Scene 3: Enabling Permission (1-Tap Grant Flow) ==="
 $ADB shell input tap 500 285 # Tap 'Enable Wiqayah (1-Tap Grant)'
@@ -67,16 +66,17 @@ echo "=== Scene 7: False Positive Test 4 - Surah Recitation (Clean) ==="
 $ADB shell am force-stop com.google.android.youtube
 sleep 0.5
 $ADB shell am start -a android.intent.action.VIEW -d "https://www.youtube.com/results?search_query=Surah+Al+Mulk+Full+Mishary+Alafasy" com.google.android.youtube
-sleep 4.5
-$ADB shell input tap 500 600 # Tap video to start playing recitation
-sleep 5.0 # Let Quran recitation play cleanly without any block
+sleep 3.5
+$ADB shell input tap 500 600 # Tap video to start recitation
+sleep 5.0 # Quran recitation plays cleanly without any block
 $ADB shell input keyevent 3 # Home
 sleep 2.0
 
-echo "=== Scene 8: True Positive Test 1 - Hindu Search (Pause & Reflect: Idol) ==="
+echo "=== Scene 8: True Positive Test 1 - Hindu Idols Search (Pause & Reflect: Idol) ==="
 $ADB shell am force-stop com.google.android.youtube
 sleep 0.5
-$ADB shell am start -a android.intent.action.VIEW -d "https://www.youtube.com/results?search_query=hindu" com.google.android.youtube
+$ADB shell am start -a android.intent.action.VIEW -d "https://www.youtube.com/results?search_query=hindu+idols" com.google.android.youtube
+sleep 3.5 # Wait for YouTube to load results and trigger Pause & Reflect
 sleep 6.0 # 6 full seconds displaying 'Pause & Reflect: Idol / Religious sculpture detected'
 # Dismiss to home
 $ADB shell input keyevent 3
@@ -99,16 +99,20 @@ echo "=== Scene 10: True Positive Test 3 - Romantic Kiss Scene (Pause & Reflect:
 $ADB shell am force-stop com.google.android.youtube
 sleep 0.5
 $ADB shell am start -a android.intent.action.VIEW -d "https://www.youtube.com/results?search_query=romantic+couple+kiss+scene" com.google.android.youtube
+sleep 3.5 # Wait for YouTube to load results and trigger Pause & Reflect
 sleep 6.0 # 6 full seconds displaying 'Pause & Reflect: Prohibited visual content detected'
 # Dismiss to home
 $ADB shell input keyevent 3
 sleep 2.5
 
-echo "=== Scene 11: True Positive Test 4 - Internal Music Playback (Pause & Reflect: Audio) ==="
-$ADB shell am force-stop com.google.android.apps.youtube.music
+echo "=== Scene 11: True Positive Test 4 - Active Music Playback (Pause & Reflect: Audio) ==="
+$ADB shell am force-stop com.google.android.youtube
 sleep 0.5
-$ADB shell am start -a android.intent.action.VIEW -d "https://music.youtube.com/watch?v=kXYiU_JCYtU" com.google.android.apps.youtube.music
-sleep 6.0 # 6 full seconds displaying 'Pause & Reflect: Music playback detected'
+$ADB shell am start -a android.intent.action.VIEW -d "https://www.youtube.com/results?search_query=official+music+video" com.google.android.youtube
+sleep 3.5 # Wait for search results
+$ADB shell input tap 500 600 # Select and actively PLAY the music video!
+sleep 1.5 # Wait for audio playback to start
+sleep 6.0 # 6 full seconds displaying 'Pause & Reflect: Music playback detected' while song plays!
 # Dismiss to home
 $ADB shell input keyevent 3
 sleep 2.5
